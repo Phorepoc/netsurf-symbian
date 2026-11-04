@@ -1,0 +1,23 @@
+diff -ru a/netsurf/Makefile.config b/netsurf/Makefile.config
+--- a/netsurf/Makefile.config	2026-10-22 10:49:36.708057400 +0100
++++ b/netsurf/Makefile.config	2026-10-22 10:49:37.181290700 +0100
+@@ -14,8 +14,8 @@
+ endif
+ 
+ # Resources live in the NRO romfs (; is fixed to : at runtime)
+-override NETSURF_FRAMEBUFFER_RESOURCES := romfs;/res
+-override NETSURF_FB_RESPATH := romfs;/res:./frontends/framebuffer/res
++override NETSURF_FRAMEBUFFER_RESOURCES := /resource/phenetsurf/
++override NETSURF_FB_RESPATH := /resource/phenetsurf:./frontends/framebuffer/res
+ 
+ # Diagnostic logging for hardware bring-up
+ override NETSURF_LOG_LEVEL := INFO
+@@ -23,7 +23,7 @@
+ 
+ # Freetype fonts from romfs (native fallback: system TTF dir)
+ override NETSURF_FB_FONTLIB := freetype
+-override NETSURF_FB_FONTPATH := romfs;/res/fonts:/usr/share/fonts/TTF
++override NETSURF_FB_FONTPATH := /resource/fonts
+ override NETSURF_FB_FONT_CURSIVE := DejaVuSans.ttf
+ override NETSURF_FB_FONT_FANTASY := DejaVuSans.ttf
+ 

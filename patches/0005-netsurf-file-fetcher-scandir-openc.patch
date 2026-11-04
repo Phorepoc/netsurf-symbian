@@ -1,0 +1,18 @@
+--- a/netsurf/content/fetchers/file/file.c
++++ b/netsurf/content/fetchers/file/file.c
+@@ -662,6 +662,15 @@
+ 	return tolower(*s1) - tolower(*s2);
+ }
+ 
++#ifdef __SYMBIAN32__
++/* Open C declares the BSD scandir(), whose comparator takes const void * (each a const struct dirent **) */
++static int dir_sort_alpha_v(const void *d1, const void *d2)
++{
++	return dir_sort_alpha(d1, d2);
++}
++#define dir_sort_alpha dir_sort_alpha_v
++#endif
++
+ static void fetch_file_process_dir(struct fetch_file_context *ctx,
+ 				   struct stat *fdstat)
+ {

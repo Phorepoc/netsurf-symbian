@@ -1,0 +1,39 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: GPL-2.0-only
+
+// phewebengine_netsurf.mmp -- the NetSurf web-engine package for the Phorepoc browser: an ECom plug-in implementing
+// phewebengine.h's PheWebEngineApi over NetSurf's core, with the QuickJS-ng JavaScript handler. NetSurf and its libraries are
+// PREBUILT archives (recipes/build_netsurf.sh, build_deps.sh), linked through the registry's x32_archives / arm_archives;
+// compiled here: the adapter (phewebengine_netsurf.cpp), the engine core (phengine_ns.c, plain C against NetSurf's headers,
+// whose include paths the registry entry adds) and the entropy source mbedTLS needs.
+// phewebengine.h / phewebengine_ecom.h come from the webengine repository (a layer / -I on its os/inc).
+// GPL-2.0-only: the engine links NetSurf. It ships as this repository's SIS, installed through the Catalogue.
+TARGET			phewebengine_netsurf.dll
+TARGETTYPE		plugin
+MACRO			PHE_NS_QJS
+UID				0x10009D8D 0xE7016B11
+// user capabilities only (a self-signed SIS grants these); >= the host browser's
+CAPABILITY		NetworkServices LocalServices ReadUserData WriteUserData UserEnvironment
+VENDORID		0
+EPOCALLOWDLLDATA
+
+OS_LAYER_SYSTEMINCLUDE_SYMBIAN
+OS_LAYER_LIBC_SYSTEMINCLUDE
+USERINCLUDE		..
+
+SOURCEPATH		..
+SOURCE			phengine_ns.c
+SOURCE			phewebengine_netsurf.cpp
+// the entropy source mbedTLS needs (mbedtls_ms_time), from the tls repository
+SOURCEPATH		../../mbedtls
+SOURCE			entropy_symbian.cpp
+
+SOURCEPATH		..
+START RESOURCE	phewebengine_netsurf.rss
+TARGET			phewebengine_netsurf.rsc
+END
+
+LIBRARY			euser.lib efsrv.lib ecom.lib
+LIBRARY			libc.lib libm.lib libpthread.lib libz.lib
+UNPAGED
+SMPSAFE

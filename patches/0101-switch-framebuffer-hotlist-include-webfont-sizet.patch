@@ -1,0 +1,44 @@
+diff -ru a/netsurf/frontends/framebuffer/font.h b/netsurf/frontends/framebuffer/font.h
+--- a/netsurf/frontends/framebuffer/font.h	2026-10-22 09:46:37.382108200 +0100
++++ b/netsurf/frontends/framebuffer/font.h	2026-10-22 09:46:38.287609100 +0100
+@@ -31,7 +31,7 @@
+  * data must remain valid for the process lifetime. */
+ bool fb_font_register_webfont(const char *family,
+ 			      const unsigned char *data,
+-			      unsigned long data_len);
++			      size_t data_len);
+ 
+ /**
+  * Finalise framebuffer font handling.
+diff -ru a/netsurf/frontends/framebuffer/gui.c b/netsurf/frontends/framebuffer/gui.c
+--- a/netsurf/frontends/framebuffer/gui.c	2026-10-22 09:46:37.380506300 +0100
++++ b/netsurf/frontends/framebuffer/gui.c	2026-10-22 09:50:56.533499900 +0100
+@@ -72,6 +72,8 @@
+ #include "netsurf/download.h"
+ #include "desktop/download.h"
+ #include "html/webfont.h"
++#include "desktop/hotlist.h"
++#include "utils/file.h"
+ 
+ #include "framebuffer/gui.h"
+ #include "framebuffer/fbtk.h"
+@@ -783,7 +785,9 @@
+ 	if (cbi->event->type != NSFB_EVENT_KEY_UP)
+ 		return 0;
+ 
++#ifdef __SWITCH__
+ 	switch_audio_stop();
++#endif
+ 	fb_audio_hide(gw);
+ 	return 1;
+ }
+@@ -3259,7 +3263,9 @@
+ 	}
+ 
+ 	/* stop any audio and flush bookmarks before the core goes down */
++#ifdef __SWITCH__
+ 	switch_audio_stop();
++#endif
+ 	hotlist_fini();
+ 
+ 	netsurf_exit();

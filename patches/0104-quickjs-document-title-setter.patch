@@ -1,0 +1,20 @@
+diff -ru a/netsurf/content/handlers/javascript/quickjs/qjs_dom.c b/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_dom.c	2026-10-22 12:44:06.992706400 +0100
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_dom.c	2026-10-22 12:44:07.594006000 +0100
+@@ -1940,6 +1940,16 @@
+ 		dom_html_document_set_title((dom_html_document *)node, ds);
+ 		dom_string_unref(ds);
+ 	}
++	/* the HTML content only re-reads <title> on a DOMSubtreeModified of the title node itself, which libdom does not raise
++	 * for set_title: tell the content directly so the window/history title follows the script */
++	{
++		struct jsthread *t = qjs_thread(ctx);
++		const char *s = JS_ToCString(ctx, v);
++		if (t != NULL && t->htmlc != NULL && s != NULL)
++			content__set_title(&t->htmlc->base, s);
++		if (s != NULL)
++			JS_FreeCString(ctx, s);
++	}
+ 	return JS_UNDEFINED;
+ }
+ 

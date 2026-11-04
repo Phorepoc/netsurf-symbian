@@ -1,0 +1,20 @@
+--- a/libnsutils/src/unistd.c	2026-09-25 08:36:23.453142800 +0100
++++ b/libnsutils/src/unistd.c	2026-09-25 08:36:23.851100500 +0100
+@@ -21,7 +21,7 @@
+ /* exported interface documented in nsutils/unistd.h */
+ ssize_t nsu_pwrite(int fd, const void *buf, size_t count, off_t offset)
+ {
+-#if (defined(__riscos) || defined(__amiga) || defined(_WIN32) || defined(__serenity__))
++#if (defined(__riscos) || defined(__amiga) || defined(_WIN32) || defined(__serenity__) || defined(__SYMBIAN32__))
+         off_t sk;
+ 
+         sk = lseek(fd, offset, SEEK_SET);
+@@ -53,7 +53,7 @@
+ /* exported interface documented in nsutils/unistd.h */
+ ssize_t nsu_pread(int fd, void *buf, size_t count, off_t offset)
+ {
+-#if (defined(__riscos) || defined(_WIN32) || defined(__serenity__) || (defined(__amiga) && !defined(__amigaos4__)))
++#if (defined(__riscos) || defined(_WIN32) || defined(__serenity__) || defined(__SYMBIAN32__) || (defined(__amiga) && !defined(__amigaos4__)))
+         off_t sk;
+ 
+         sk = lseek(fd, offset, SEEK_SET);

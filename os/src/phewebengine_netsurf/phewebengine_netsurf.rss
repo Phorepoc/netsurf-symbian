@@ -1,0 +1,28 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: GPL-2.0-only
+
+// phewebengine_netsurf.rss -- the ECom registration of the NetSurf engine package (interface PHE_WEBENGINE_ECOM_IFACE_UID).
+#include <ecom/registryinfo.rh>
+
+RESOURCE REGISTRY_INFO theInfo
+	{
+	dll_uid = 0xE7016B11;
+	interfaces =
+		{
+		INTERFACE_INFO
+			{
+			interface_uid = 0xE7016B01;
+			implementations =
+				{
+				IMPLEMENTATION_INFO
+					{
+					implementation_uid = 0xE7016B11;
+					version_no = 1;
+					display_name = "NetSurf";
+					default_data = "caps=reflow;api=1";
+					opaque_data = "";
+					}
+				};
+			}
+		};
+	}

@@ -1,0 +1,5 @@
+ca_bundle:/resource/phenetsurf/ca-bundle.crt
+fb_face_sans_serif:z:/resource/fonts/s60sans_r.ttf
+fb_face_sans_serif_bold:z:/resource/fonts/s60sans_sb.ttf
+fb_face_monospace:z:/resource/fonts/UbuntuMono-Regular.ttf
+fb_face_monospace_bold:z:/resource/fonts/UbuntuMono-Bold.ttf

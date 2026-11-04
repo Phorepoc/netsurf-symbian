@@ -1,0 +1,14 @@
+diff -ru a/netsurf/content/handlers/javascript/quickjs/quickjs.c b/netsurf/content/handlers/javascript/quickjs/quickjs.c
+--- a/netsurf/content/handlers/javascript/quickjs/quickjs.c	2026-10-22 11:35:51.835321700 +0100
++++ b/netsurf/content/handlers/javascript/quickjs/quickjs.c	2026-10-22 11:35:53.346465000 +0100
+@@ -140,6 +140,10 @@
+ 	}
+ 
+ 	JS_SetMemoryLimit(heap->rt, QJS_MEMORY_LIMIT);
++#ifdef __SYMBIAN32__
++	/* the main thread of the Symbian port has a fixed stack (EPOCSTACKSIZE 0x80000); quickjs assumes 1 MB by default */
++	JS_SetMaxStackSize(heap->rt, 256 * 1024);
++#endif
+ 	if (getenv("NS_JS_LEAKS") != NULL)
+ 		JS_SetDumpFlags(heap->rt, JS_DUMP_LEAKS);
+ 	JS_SetInterruptHandler(heap->rt, qjs_interrupt_handler, heap);
