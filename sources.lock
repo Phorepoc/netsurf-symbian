@@ -1,0 +1,8 @@
+# The source releases the recipes build (recipes/fetch_sources.sh checks every hash).
+# name	file	sha256	url
+netsurf	netsurf-switch-29d910fc28e6e0c816eea4a86bae4e40f2ac699d.tar.gz	2e3b34d914a5a92f21dec59c8aca4074cb48a70d07edd83a53d5e7dff3d94635	https://github.com/etonedemid/netsurf-switch/archive/29d910fc28e6e0c816eea4a86bae4e40f2ac699d.tar.gz
+quickjs	quickjs-ng-0.17.0.tar.gz	559bc4c420475e55c7ab4510adbc562f55d7524d75e8e89d79ce4bb02f5687d9	https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.17.0.tar.gz
+curl	curl-8.10.1.tar.gz	d15ebab765d793e2e96db090f0e172d127859d78ca6f6391d7eafecfd894bbc0	https://curl.se/download/curl-8.10.1.tar.gz
+libpng	libpng-1.6.44.tar.gz	8c25a7792099a0089fa1cc76c94260d0bb3f1ec52b93671b572f8bb61577b732	https://download.sourceforge.net/libpng/libpng-1.6.44.tar.gz
+libjpeg	jpegsrc.v9f.tar.gz	04705c110cb2469caa79fb71fba3d7bf834914706e9641a4589485c1f832565b	https://www.ijg.org/files/jpegsrc.v9f.tar.gz
+freetype	freetype-2.13.3.tar.xz	0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289	https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz
