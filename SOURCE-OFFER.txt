@@ -1,0 +1,31 @@
+NetSurf web engine for Phorepoc -- licence notice and source offer
+
+This package contains the NetSurf web engine (a plug-in DLL for the Phorepoc browser), built from the NetSurf-for-Switch fork
+of NetSurf 3.12-dev with its QuickJS-ng JavaScript handler, and the libraries it uses. NetSurf is copyright the NetSurf Browser
+Project and its contributors, and is licensed under the GNU General Public License version 2 (GPL-2.0), as are the files of
+this package that link it (the engine core and the plug-in adapter). The other libraries in the DLL and their licences:
+NetSurf's libraries (MIT), libutf8proc (MIT), quickjs-ng (MIT), curl (curl licence), mbedTLS (Apache-2.0), libpng (libpng
+licence), IJG libjpeg (IJG licence), FreeType (FreeType License). The CA certificate bundle is Mozilla's root list as published
+by curl, under the Mozilla Public License 2.0. All licence texts are installed with this package in
+\resource\phweb\netsurf\licences\ (NOTICE lists which file covers what).
+
+The engine is a separate dynamic library loaded by the browser as a plug-in: you can replace it with your own build (modified
+or not) of the same engine and the browser keeps working. The archives the DLL is linked from are left by the build (see
+build.sh in the source below), so a modified NetSurf can be relinked into the same DLL.
+
+Corresponding source, available to anyone who has this package, for at least three years after the release you installed
+it from:
+
+  1. The unmodified upstream sources, each pinned by SHA-256 in sources.lock of the repository below (the NetSurf tree from
+     https://github.com/etonedemid/netsurf-switch at commit 29d910fc28e6e0c816eea4a86bae4e40f2ac699d, quickjs-ng 0.17.0 from
+     https://github.com/quickjs-ng/quickjs, curl, libpng, libjpeg, FreeType, and mbedTLS through the tls repository).
+  2. Our changes to them (patches/), our own files, and the scripts that fetch, patch, build and package the engine:
+       https://github.com/Phorepoc/netsurf-symbian   (the release tag of this package)
+     with the toolchain images and build tools in https://github.com/Phorepoc/toolchain and https://github.com/Phorepoc/pdk,
+     the TLS layer in https://github.com/Phorepoc/tls and the plug-in interface in https://github.com/Phorepoc/webengine.
+
+Written offer: if the links above are no longer available, send a request to the address given on the Phorepoc
+organisation page https://github.com/Phorepoc and we will send you the corresponding source on a medium of your choice
+for the cost of the medium.
+
+NetSurf is a trademark of the NetSurf Browser Project and is used here only to name the software.

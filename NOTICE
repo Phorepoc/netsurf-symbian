@@ -1,0 +1,41 @@
+netsurf-symbian: the NetSurf browser engine of Phorepoc, on Symbian
+Copyright The Phorepoc Authors (see AUTHORS)
+
+Phorepoc was founded by Kyriakos Bompotis.
+
+Our files (os/src, recipes, registry, patches) are licensed under the GNU General Public License, version 2 only (LICENSE),
+the licence of NetSurf, which the engine links into one plug-in DLL. A built engine is therefore GPL-2.0-only as a whole.
+It is a separate dynamic library loaded by the Phorepoc browser through the web-engine plug-in interface (the webengine
+repository, Apache-2.0); the browser and the rest of Phorepoc are not linked with it.
+
+NetSurf itself is not copied here: recipes/fetch_sources.sh fetches the NetSurf tree named in sources.lock, pinned by SHA-256,
+and recipes/build_netsurf.sh applies patches/ to it. The tree is the NetSurf-for-Nintendo-Switch fork
+(https://github.com/etonedemid/netsurf-switch, commit 29d910fc28e6e0c816eea4a86bae4e40f2ac699d), which is NetSurf 3.12-dev
+with a QuickJS-ng JavaScript handler. NetSurf is copyright the NetSurf Browser Project and its contributors, GPL-2.0-only with
+an exception for linking OpenSSL, and its visual artwork is MIT (LICENSES/NetSurf-COPYING.txt, LICENSES/GPL-2.0.txt). The
+QuickJS handler (content/handlers/javascript/quickjs) is copyright the NetSurf Switch port contributors, GPL-2.0-only, with
+its per-file notices kept unchanged.
+
+Not part of this repository, fetched and built at build time (sources.lock), each under its own licence (LICENSES/):
+
+- NetSurf's libraries, in the tree above: libwapcaplet, libparserutils, libhubbub, libcss, libdom, libnsutils, libnsbmp,
+  libnsgif, libnsfb, libnslog, libnspsl, libsvgtiny: MIT (NetSurf-libraries-MIT.txt); libutf8proc: MIT with Unicode data
+  terms (libutf8proc-MIT.md). libnspsl compiles in the Mozilla Public Suffix List, MPL-2.0 (MPL-2.0.txt).
+- quickjs-ng 0.17.0: MIT (QuickJS-ng-MIT.txt)
+- curl 8.10.1: the curl licence (curl.txt)
+- libpng 1.6.44: the libpng licence (libpng-2.0.txt)
+- IJG libjpeg 9f: the IJG licence (libjpeg-IJG.txt)
+- FreeType 2.13.3: the FreeType License (FreeType-FTL.txt), which we use under its terms
+- mbedTLS 3.6 (Apache-2.0 option): the tls repository's, built from its pinned release (mbedTLS-Apache-2.0.txt)
+- the CA bundle (Mozilla's roots as curl publishes them, MPL-2.0 data; MPL-2.0.txt) is the tls repository's
+  (recipes/fetch_cacert.sh); the engine SIS carries a copy as \resource\phenetsurf\ca-bundle.crt, as data, not linked into code.
+
+The Symbian OS and Open C headers the code compiles against come from the Phorepoc core repository (EPL-1.0) and are not
+copied here.
+
+The engine SIS installs these licence texts, this NOTICE and SOURCE-OFFER.txt (where to get the corresponding source, and
+the written offer) in \resource\phweb\netsurf\licences\.
+
+Thanks to the NetSurf project and the authors of its libraries, to the maintainers of the NetSurf-for-Switch fork whose
+QuickJS handler this engine uses, to the QuickJS-ng project, and to every library listed above; and to the Symbian
+Foundation for releasing the platform.
