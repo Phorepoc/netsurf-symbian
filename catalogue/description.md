@@ -1,7 +1,7 @@
 > Small as a mouse, fast as a cheetah and available for free. NetSurf is a multi-platform web browser for RISC OS,
 > UNIX-like platforms (including Linux), Mac OS X, and more.
 >
-> -- [NetSurf](https://www.netsurf-browser.org/)
+> — [NetSurf](https://www.netsurf-browser.org/)
 
 The Phorepoc browser draws the page with a web engine that you install separately. This package is NetSurf's engine,
 with its own HTML and CSS layout and QuickJS for JavaScript, built for Phorepoc as one plug-in library the browser
