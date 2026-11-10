@@ -1,0 +1,56 @@
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
+@@ -52,6 +52,7 @@
+ #include "utils/log.h"
+ #include "utils/nsurl.h"
+ #include "utils/useragent.h"
++#include "content/urldb.h"
+ #include "netsurf/browser_window.h"
+ #include "netsurf/misc.h"
+ #include "desktop/gui_internal.h"
+@@ -1976,13 +1977,34 @@
+ static JSValue
+ doc_get_cookie(JSContext *ctx, JSValueConst this_val)
+ {
+-	return JS_NewStringLen(ctx, "", 0);
++	/* the page's cookies as a script sees them (no HttpOnly ones), from NetSurf's cookie store -- a script that checks a
++	 * cookie the server set (a consent or login state) found an empty string before */
++	struct jsthread *t = qjs_thread(ctx);
++	char *c;
++	JSValue r;
++	if (t == NULL || t->htmlc == NULL || t->htmlc->base_url == NULL)
++		return JS_NewStringLen(ctx, "", 0);
++	c = urldb_get_cookie(t->htmlc->base_url, false);
++	if (c == NULL)
++		return JS_NewStringLen(ctx, "", 0);
++	r = JS_NewString(ctx, c);
++	free(c);
++	return r;
+ }
+ 
+ static JSValue
+ doc_set_cookie(JSContext *ctx, JSValueConst this_val, JSValueConst v)
+ {
+-	NSLOG(netsurf, DEBUG, "document.cookie write ignored");
++	/* one cookie per write, parsed like a Set-Cookie header of the page's URL */
++	struct jsthread *t = qjs_thread(ctx);
++	const char *s;
++	if (t == NULL || t->htmlc == NULL || t->htmlc->base_url == NULL)
++		return JS_UNDEFINED;
++	s = JS_ToCString(ctx, v);
++	if (s != NULL) {
++		urldb_set_cookie(s, t->htmlc->base_url, NULL);
++		JS_FreeCString(ctx, s);
++	}
+ 	return JS_UNDEFINED;
+ }
+ 
+@@ -2942,7 +2964,7 @@
+ 			  JS_NewString(ctx, "NetSurf"));
+ 	JS_SetPropertyStr(ctx, navigator, "language",
+ 			  JS_NewString(ctx, "en"));
+-	JS_SetPropertyStr(ctx, navigator, "cookieEnabled", JS_FALSE);
++	JS_SetPropertyStr(ctx, navigator, "cookieEnabled", JS_TRUE);
+ 	JS_SetPropertyStr(ctx, navigator, "onLine", JS_TRUE);
+ 	JS_SetPropertyStr(ctx, global, "navigator", navigator);
+ 
