@@ -73,6 +73,7 @@ struct gui_window {
 	int loading, progress, sec, can_back, can_fwd, focus, dirty;
 	int down;
 	char url[1024], title[256], status[256], err[128];
+	char fval[1024];                               /* PHE_STR_FOCUS_VALUE: the focused text field (never a password) */
 };
 
 static struct gui_window views[MAXV];
@@ -166,7 +167,7 @@ static int u8to16(const char *s, unsigned short *out, int cap)   /* returns the 
 }
 
 /* ---- command queue (UI thread -> engine thread) -------------------------------------------------------------------------- */
-enum { C_DESTROY, C_RESIZE, C_LOAD, C_CMD, C_SCROLL, C_PTR, C_TEXT, C_KEY, C_ZOOM };
+enum { C_DESTROY, C_RESIZE, C_LOAD, C_CMD, C_SCROLL, C_PTR, C_TEXT, C_KEY, C_ZOOM, C_SETFIELD };
 struct cmd { struct cmd *next; int type; PheView v; int a, b, c; char *s; };
 static struct cmd *qhead, *qtail;
 
@@ -310,9 +311,21 @@ static void gw_set_status(struct gui_window *gw, const char *t)
 	if (gw->loading) post(gw, PHE_EV_PROGRESS, 60, 0);
 }
 static void gw_set_pointer(struct gui_window *gw, enum gui_pointer_shape s) { (void)gw; (void)s; }
+/* the focused text field's value (engine thread): the frontend's editor starts with it (PHE_STR_FOCUS_VALUE).
+ * A password field gives "" (its text is never shown in clear). */
+int phns_focus_value(struct hlcache_handle *h, char *buf, unsigned int len);   /* patch 0110 (html/interaction.c) */
+static void capture_focus_value(struct gui_window *gw)
+{
+	char tmp[sizeof gw->fval];
+	if (!gw->bw || !phns_focus_value(browser_window_get_content(gw->bw), tmp, sizeof tmp))
+		tmp[0] = 0;
+	tmp[sizeof tmp - 1] = 0;
+	pthread_mutex_lock(&mu); memcpy(gw->fval, tmp, sizeof tmp); pthread_mutex_unlock(&mu);
+}
 static void gw_place_caret(struct gui_window *gw, int x, int y, int h, const struct rect *clip)
 {
 	(void)x; (void)y; (void)h; (void)clip;
+	if (!gw->focus) capture_focus_value(gw);
 	if (!gw->focus) { gw->focus = 1; post(gw, PHE_EV_FOCUS, 2, 0); }
 }
 
@@ -476,6 +489,12 @@ static void do_cmd(struct cmd *k)
 		if (g->bw && k->a >= 250 && k->a <= 5000) browser_window_set_scale(g->bw, (float)k->a / 1000.0f, true);
 		g->dirty = 1;
 		break;
+	case C_SETFIELD:                                   /* replace the focused field's text: select all, delete, type */
+		if (g->bw) {
+			browser_window_key_press(g->bw, NS_KEY_SELECT_ALL);
+			browser_window_key_press(g->bw, NS_KEY_DELETE_LEFT);
+		}
+		/* fall through */
 	case C_TEXT:
 		if (g->bw && k->s) {
 			const unsigned char *p = (const unsigned char *)k->s;
@@ -604,7 +623,8 @@ static int e_get_str(PheView v, int which, unsigned short *buf, int cap)
 	pthread_mutex_lock(&mu);
 	g = find(v);
 	if (g) {
-		const char *s = which == PHE_STR_URL ? g->url : which == PHE_STR_TITLE ? g->title : which == PHE_STR_ERROR ? g->err : "";
+		const char *s = which == PHE_STR_URL ? g->url : which == PHE_STR_TITLE ? g->title : which == PHE_STR_ERROR ? g->err :
+		                which == PHE_STR_FOCUS_VALUE ? g->fval : "";
 		strncpy(tmp, s, sizeof tmp - 1); tmp[sizeof tmp - 1] = 0;
 	}
 	pthread_mutex_unlock(&mu);
@@ -632,6 +652,7 @@ static void e_zoom(PheView v, int z, int cx, int cy) { (void)cx; (void)cy; enque
 static void e_pointer(PheView v, int type, int x, int y) { enqueue(C_PTR, v, type, x, y, NULL); }
 static void e_key(PheView v, int scan, int uc, int down) { (void)scan; if (down && uc > 0) enqueue(C_KEY, v, uc, 0, 0, NULL); }
 static void e_text(PheView v, const unsigned short *s, int len) { enqueue(C_TEXT, v, 0, 0, 0, u16to8(s, len)); }
+static void e_set_field(PheView v, const unsigned short *s, int len) { enqueue(C_SETFIELD, v, 0, 0, 0, u16to8(s, len)); }
 static void e_setting(PheView v, int id, int val) { (void)v; (void)id; (void)val; }
 static int e_lock_pixels(PheView v, const unsigned int **px, int *w, int *h, int *stride)
 {
@@ -653,7 +674,8 @@ static const PheWebEngineApi api = {
 	e_load, e_cmd, e_get_state, e_get_str, e_poll, e_dialog_reply,
 	e_scroll, e_zoom, e_pointer, e_key, e_text, e_setting,
 	e_lock_pixels, e_unlock_pixels, NULL,
-	NULL, NULL, NULL, NULL, NULL, e_clear_data
+	NULL, NULL, NULL, NULL, NULL, e_clear_data,
+	e_set_field
 };
 
 const PheWebEngineApi *PheNetSurfGetApi(unsigned wanted)

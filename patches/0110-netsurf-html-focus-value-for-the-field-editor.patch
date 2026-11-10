@@ -1,0 +1,21 @@
+--- a/netsurf/content/handlers/html/interaction.c	2026-11-10 23:11:07.644842713 +0000
++++ b/netsurf/content/handlers/html/interaction.c	2026-11-10 23:11:07.650890181 +0000
+@@ -1934,3 +1934,18 @@
+ 	content_broadcast((struct content *)html, CONTENT_MSG_SELECTION,
+ 			&msg_data);
+ }
++
++/* Phorepoc: the focused text field's value, for the frontend's field editor (PHE_STR_FOCUS_VALUE); "" for a password
++ * field, whose text is never shown in clear. Returns 1 when buf holds a value. */
++int phns_focus_value(struct hlcache_handle *h, char *buf, unsigned int len)
++{
++	html_content *html;
++	struct form_control *fc;
++	if (len) buf[0] = 0;
++	if (!h || content_get_type(h) != CONTENT_HTML) return 0;
++	html = (html_content *)hlcache_handle_get_content(h);
++	if (!html || html->focus_type != HTML_FOCUS_TEXTAREA || !html->focus_owner.textarea) return 0;
++	fc = html->focus_owner.textarea->gadget;
++	if (!fc || fc->type == GADGET_PASSWORD || !fc->data.text.ta) return 0;
++	return textarea_get_text(fc->data.text.ta, buf, len) < 0 ? 0 : 1;
++}
