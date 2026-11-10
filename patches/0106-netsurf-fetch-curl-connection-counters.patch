@@ -1,0 +1,69 @@
+--- a/netsurf/content/fetchers/curl.c
++++ b/netsurf/content/fetchers/curl.c
+@@ -283,9 +283,50 @@
+ static mbedtls_x509_crt ns_ca_chain;
+ static bool ns_ca_loaded;
+ 
++/* Phorepoc: counters for the engine's heap log line -- open curl sockets (a page's connections, TLS for https) and TLS
++ * sessions set up so far; the engine thread is the only user, so plain ints. */
++#include <sys/socket.h>
++#include <unistd.h>
++int phns_tls_live, phns_tls_sessions;
++extern long phns_heap_alloc(void);
++
++/* PSA key slots in use (every TLS key of mbedTLS 3.6 with MBEDTLS_USE_PSA_CRYPTO lives in one); *pool = the fixed slot
++ * count, 0 when the key store grows on the heap (MBEDTLS_PSA_KEY_STORE_DYNAMIC) */
++#include <psa/crypto.h>
++int phns_psa_keys(int *pool)
++{
++	mbedtls_psa_stats_t st;
++	mbedtls_psa_get_stats(&st);
++#if defined(MBEDTLS_PSA_KEY_STORE_DYNAMIC)
++	*pool = 0;
++#else
++	*pool = (int)(st.MBEDTLS_PRIVATE(volatile_slots) + st.MBEDTLS_PRIVATE(persistent_slots) + st.MBEDTLS_PRIVATE(external_slots) + st.MBEDTLS_PRIVATE(half_filled_slots) +
++		      st.MBEDTLS_PRIVATE(cache_slots) + st.MBEDTLS_PRIVATE(empty_slots));
++#endif
++	return (int)(st.MBEDTLS_PRIVATE(volatile_slots) + st.MBEDTLS_PRIVATE(persistent_slots) + st.MBEDTLS_PRIVATE(external_slots));
++}
++
++static curl_socket_t fetch_curl_opensocket(void *clientp, curlsocktype purpose, struct curl_sockaddr *a)
++{
++	curl_socket_t s;
++	(void)clientp; (void)purpose;
++	s = socket(a->family, a->socktype, a->protocol);
++	if (s != CURL_SOCKET_BAD)
++		phns_tls_live++;
++	return s;
++}
++
++static int fetch_curl_closesocket(void *clientp, curl_socket_t s)
++{
++	(void)clientp;
++	phns_tls_live--;
++	return close(s);
++}
++
+ static CURLcode fetch_curl_mbedtls_ctx(CURL *curl, void *conf, void *parm)
+ {
+ 	(void)curl; (void)parm;
++	phns_tls_sessions++;
+ 	if (ns_ca_loaded)
+ 		mbedtls_ssl_conf_ca_chain((mbedtls_ssl_config *)conf, &ns_ca_chain, NULL);
+ 	return CURLE_OK;
+@@ -2099,10 +2140,14 @@
+ 		NSLOG(netsurf, INFO, "ca_bundle: '%s'",
+ 		      nsoption_charp(ca_bundle));
+ #ifdef NS_SHARED_MBEDTLS_CA
++		long h0 = phns_heap_alloc();
+ 		mbedtls_x509_crt_init(&ns_ca_chain);
+ 		int pr = mbedtls_x509_crt_parse_file(&ns_ca_chain, nsoption_charp(ca_bundle));
+ 		ns_ca_loaded = pr >= 0 && ns_ca_chain.version != 0;
+-		NSLOG(netsurf, INFO, "ca_bundle parsed once: %d (%s)", pr, ns_ca_loaded ? "shared chain" : "per connection");
++		NSLOG(netsurf, INFO, "ca_bundle parsed once: %d (%s), chain heap %ld KB", pr,
++		      ns_ca_loaded ? "shared chain" : "per connection", (phns_heap_alloc() - h0) >> 10);
++		SETOPT(CURLOPT_OPENSOCKETFUNCTION, fetch_curl_opensocket);
++		SETOPT(CURLOPT_CLOSESOCKETFUNCTION, fetch_curl_closesocket);
+ 		if (ns_ca_loaded) {
+ 			SETOPT(CURLOPT_CAINFO, NULL);    /* not the compiled-in default either */
+ 			SETOPT(CURLOPT_CAPATH, NULL);

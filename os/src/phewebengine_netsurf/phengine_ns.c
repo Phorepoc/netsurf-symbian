@@ -487,6 +487,9 @@ static void do_cmd(struct cmd *k)
 }
 
 void phns_install_fault_logger(void);
+void phns_heap_tick(int live, int sessions, int keys, int keypool);   /* phewebengine_netsurf.cpp: bounded heap log line */
+extern int phns_tls_live, phns_tls_sessions;  /* content/fetchers/curl.c (patch 0106) */
+int phns_psa_keys(int *pool);                  /* content/fetchers/curl.c (patch 0106) */
 static void *engine_main(void *arg)
 {
 	(void)arg;
@@ -506,6 +509,7 @@ static void *engine_main(void *arg)
 			free(k->s); free(k);
 		}
 		t = schedule_run();
+		{ int pool, keys = phns_psa_keys(&pool); phns_heap_tick(phns_tls_live, phns_tls_sessions, keys, pool); }
 		for (i = 0; i < MAXV; i++)
 			if (views[i].used) {
 				if (views[i].loading) busy = 1;

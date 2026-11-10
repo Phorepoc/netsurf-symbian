@@ -122,6 +122,41 @@ extern "C" void phns_log(const char* aMsg)
 	fs.Close();
 	}
 
+// Heap monitor: the process heap (Open C's malloc is User::Alloc, so NetSurf, curl and mbedTLS all live on it) as bytes
+// allocated now, the peak, the committed size and the max; phns_heap_alloc() for one-off measurements (the CA chain).
+extern "C" long phns_heap_alloc(void)
+	{
+	TInt total = 0;
+	User::AllocSize(total);
+	return total;
+	}
+
+// One line at most every 5 s, and only when the allocated bytes moved by 64 KB or more since the last line (an idle engine
+// logs nothing). aLive = open curl sockets (the page's connections), aHandshakes = TLS sessions set up so far, aKeys = PSA
+// key slots in use (mbedTLS keeps every TLS key in one) of aKeyPool (0 = the store grows on the heap).
+extern "C" void phns_heap_tick(int aLive, int aHandshakes, int aKeys, int aKeyPool)
+	{
+	static TInt peak = 0, last = -1, keyPeak = 0;
+	if (aKeys > keyPeak)
+		keyPeak = aKeys;
+	static TUint lastTick = 0;
+	TInt total = 0;
+	User::AllocSize(total);
+	if (total > peak)
+		peak = total;
+	TUint now = User::NTickCount();   // ms on Phorepoc
+	if (last >= 0 && (now - lastTick < 5000 || Abs(total - last) < 65536))
+		return;
+	RHeap& h = User::Heap();
+	TBuf8<200> b;
+	b.Format(_L8("ns: heap %d KB (peak %d KB) committed %d KB max %d KB; tls live %d, sessions %d; psa keys %d (peak %d) of %d"),
+		total >> 10, peak >> 10, h.Size() >> 10, h.MaxLength() >> 10, aLive, aHandshakes, aKeys, keyPeak, aKeyPool);
+	b.Append(TChar(0));
+	phns_log(reinterpret_cast<const char*>(b.Ptr()));
+	last = total;
+	lastTick = now;
+	}
+
 // Crash finder (a device has no debug port and no crash log): an exception handler on the engine threads. On a fault it
 // logs the plug-in's runtime address of phns_log (to rebase the link map) and every stack word that points into the plug-in's
 // code (the faulting pc/lr are among them: the kernel builds the exception frame on this stack), then lets the fault proceed.
