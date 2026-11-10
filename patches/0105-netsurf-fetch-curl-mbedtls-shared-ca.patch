@@ -1,0 +1,55 @@
+--- a/netsurf/content/fetchers/curl.c
++++ b/netsurf/content/fetchers/curl.c
+@@ -273,6 +273,25 @@
+ /** Curl handle with default options set; not used for transfers. */
+ static CURL *fetch_blank_curl;
+ 
++#ifdef NS_SHARED_MBEDTLS_CA
++/* Phorepoc: curl's mbedTLS backend parses the CA bundle file again for every connection (no CA cache for mbedTLS in
++ * curl 8.10): ~150 certificates and a few hundred KB of heap per handshake, and with a page's ten parallel fetches
++ * the read or the allocation failed (CURLE_SSL_CACERT_BADFILE, 77). The bundle is parsed once here and every
++ * connection's mbedTLS configuration points at that chain (read-only; all fetches run on the engine thread). */
++#include <mbedtls/ssl.h>
++#include <mbedtls/x509_crt.h>
++static mbedtls_x509_crt ns_ca_chain;
++static bool ns_ca_loaded;
++
++static CURLcode fetch_curl_mbedtls_ctx(CURL *curl, void *conf, void *parm)
++{
++	(void)curl; (void)parm;
++	if (ns_ca_loaded)
++		mbedtls_ssl_conf_ca_chain((mbedtls_ssl_config *)conf, &ns_ca_chain, NULL);
++	return CURLE_OK;
++}
++#endif
++
+ /** Ring of cached handles */
+ static struct cache_handle *curl_handle_ring = 0;
+ 
+@@ -1591,7 +1610,7 @@
+ 		 */
+ 		cert = true;
+ 	} else {
+-		NSLOG(netsurf, INFO, "Unknown cURL response code %d", result);
++		NSLOG(netsurf, INFO, "Unknown cURL response code %d: %s", result, fetch_error_buffer);
+ 		error = true;
+ 	}
+ 
+@@ -2072,6 +2091,17 @@
+ 	    strcmp(nsoption_charp(ca_bundle), "")) {
+ 		NSLOG(netsurf, INFO, "ca_bundle: '%s'",
+ 		      nsoption_charp(ca_bundle));
++#ifdef NS_SHARED_MBEDTLS_CA
++		mbedtls_x509_crt_init(&ns_ca_chain);
++		int pr = mbedtls_x509_crt_parse_file(&ns_ca_chain, nsoption_charp(ca_bundle));
++		ns_ca_loaded = pr >= 0 && ns_ca_chain.version != 0;
++		NSLOG(netsurf, INFO, "ca_bundle parsed once: %d (%s)", pr, ns_ca_loaded ? "shared chain" : "per connection");
++		if (ns_ca_loaded) {
++			SETOPT(CURLOPT_CAINFO, NULL);    /* not the compiled-in default either */
++			SETOPT(CURLOPT_CAPATH, NULL);
++			SETOPT(CURLOPT_SSL_CTX_FUNCTION, fetch_curl_mbedtls_ctx);
++		} else
++#endif
+ 		SETOPT(CURLOPT_CAINFO, nsoption_charp(ca_bundle));
+ 	}
+ 	if (nsoption_charp(ca_path) && strcmp(nsoption_charp(ca_path), "")) {

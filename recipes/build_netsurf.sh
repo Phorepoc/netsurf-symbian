@@ -127,6 +127,10 @@ for lib in $LIBS; do
     for f in "${ALLINC[@]}"; do echo "$f" >> "$od/.flags"; done
     if [ "$lib" = netsurf ]; then
         printf '%s\n' -include "$NSS/os/src/netsurf/nsport_symbian.h" -include sys/select.h "-I$OUT/qjs-include" >> "$od/.flags"
+        # the curl fetcher parses the CA bundle once into a shared mbedTLS chain (patch 0105): mbedTLS's headers with the
+        # configuration curl was built with
+        printf '%s\n' -DNS_SHARED_MBEDTLS_CA '-DMBEDTLS_CONFIG_FILE="phorepoc_mbedtls_config.h"' \
+            "-I$(adaptation_dir tls)/os/src/mbedtls" "-I$PHOREPOC_BUILD/tls/mbedtls-src/include" >> "$od/.flags"
     fi
     # parserutils' own codecs (UTF-8/16, ISO-8859-x, Windows-125x, ASCII) instead of iconv: Open C's iconv_open("UTF-8",
     # "Windows-1252") fails -> every page without a UTF-8 charset = BadEncoding
