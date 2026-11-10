@@ -1,0 +1,81 @@
+--- a/netsurf/content/handlers/html/css.c
++++ b/netsurf/content/handlers/html/css.c
+@@ -44,6 +44,7 @@
+ #include "html/private.h"
+ #include "html/css.h"
+ #include "html/shadow.h"
++#include "html/rebuild.h"
+ 
+ static nsurl *html_default_stylesheet_url;
+ static nsurl *html_adblock_stylesheet_url;
+@@ -116,6 +117,12 @@
+ 		      nsurl_access(hlcache_handle_get_url(css)));
+ 		parent->base.active--;
+ 		NSLOG(netsurf, INFO, "%d fetches active", parent->base.active);
++		if (parent->select_ctx != NULL) {
++			/* a sheet a script replaced after layout: it joins
++			 * the selection context on the restyle */
++			parent->rebuild_styles_changed = true;
++			html_rebuild_schedule(parent);
++		}
+ 		break;
+ 
+ 	case CONTENT_MSG_ERROR:
+@@ -347,10 +354,41 @@
+ 	}
+ 
+ 	if (sheet != NULL) {
++		hlcache_handle *old = s->sheet;
++
+ 		NSLOG(netsurf, INFO, "Updating sheet %p with %p", s->sheet,
+ 		      sheet);
+ 
+-		if (s->sheet != NULL) {
++		s->sheet = sheet;
++		if (old != NULL && c->select_ctx != NULL) {
++			/* the selection context holds the old sheet's
++			 * css_stylesheet: replace the context before the
++			 * release below frees it (a script that rewrites a
++			 * <style> otherwise leaves selection walking a freed
++			 * selector hash) */
++			css_select_ctx *ctx = NULL;
++			if (html_css_new_selection_context(c, &ctx) ==
++					NSERROR_OK) {
++				css_select_ctx_destroy(c->select_ctx);
++				c->select_ctx = ctx;
++			} else {
++				/* keep the old sheet alive with its context */
++				s->sheet = old;
++				if (content_get_status(sheet) !=
++						CONTENT_STATUS_DONE) {
++					hlcache_handle_abort(sheet);
++					c->base.active--;
++				}
++				hlcache_handle_release(sheet);
++				s->modified = false;
++				return false;
++			}
++			c->rebuild_styles_changed = true;
++			html_rebuild_schedule(c);
++		}
++
++		if (old != NULL) {
++			s->sheet = old;
+ 			switch (content_get_status(s->sheet)) {
+ 			case CONTENT_STATUS_DONE:
+ 				break;
+@@ -765,7 +803,13 @@
+ 			origin = CSS_ORIGIN_USER;
+ 		}
+ 
+-		if (hsheet->sheet != NULL) {
++		/* a sheet replaced by a script may still be fetching (it
++		 * has no content yet); it joins when it is done and the
++		 * page is restyled */
++		if (hsheet->sheet != NULL &&
++		    hlcache_handle_get_content(hsheet->sheet) != NULL &&
++		    content_get_status(hsheet->sheet) ==
++				CONTENT_STATUS_DONE) {
+ 			sheet = nscss_get_stylesheet(hsheet->sheet);
+ 		}
+ 
