@@ -357,6 +357,7 @@ static int find_resources(void)
 	return -1;
 }
 
+extern void phns_hold_connection(const char *iap);   /* phewebengine_netsurf.cpp: keeps the access point up */
 extern void ram_register_surface(void);      /* libnsfb: only a constructor references it, so the archive member needs a real reference */
 static int ns_start(void)
 {
@@ -384,6 +385,7 @@ static int ns_start(void)
 	ifr.ifr_name[strcspn(ifr.ifr_name, "\r\n")] = 0;
 	trace("ns: setdefaultif", ifr.ifr_name);
 	setdefaultif(&ifr);
+	phns_hold_connection(ifr.ifr_name);
 	if (netsurf_register(&tbl) != NSERROR_OK) { trace("ns: register failed", NULL); return -1; }
 	respaths = fb_init_resource_path(RESDIR);
 	nslog_init(nslog_stream_configure, &argc, argv);

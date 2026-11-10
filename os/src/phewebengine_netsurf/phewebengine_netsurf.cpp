@@ -12,9 +12,90 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ecom/implementationproxy.h>
+#include <es_sock.h>
+#include <es_enum.h>
+#include <commdb.h>
+#include <cdbcols.h>
+#include <commdbconnpref.h>
 #include <phorepoc/phewebengine_ecom.h>
 
 extern "C" const PheWebEngineApi* PheNetSurfGetApi(unsigned aWanted);
+extern "C" void phns_log(const char* aMsg);
+
+// The access point stays up while the engine lives. setdefaultif only names the interface: Open C brings the connection up
+// for the first socket and the network layer closes it again once its last socket is gone (idle timeout). The next fetch
+// then failed in curl's resolver (CURLE_COULDNT_RESOLVE_HOST) or never connected (CURLE_OPERATION_TIMEDOUT): the first page
+// loaded, every later one did not. Like the WebKit engine, hold an RConnection for the engine thread's lifetime: attach to a
+// connection that is up, else start the named IAP (no dialog). Called on the engine thread (the handles belong to it).
+static RSocketServ gSockServ;
+static RConnection gConn;
+static TBool gConnOpen = EFalse;
+
+static TInt StartIapByName(const TDesC& aName)
+	{
+	TUint32 iap = 0;
+	CCommsDatabase* db = NULL;
+	TRAPD(r, db = CCommsDatabase::NewL());
+	if (r != KErrNone)
+		return r;
+	CCommsDbTableView* v = NULL;
+	TRAP(r, v = db->OpenViewMatchingTextLC(TPtrC(IAP), TPtrC(COMMDB_NAME), aName); CleanupStack::Pop(v));
+	if (r == KErrNone)
+		{
+		if (v->GotoFirstRecord() == KErrNone)
+			TRAP(r, v->ReadUintL(TPtrC(COMMDB_ID), iap));
+		delete v;
+		}
+	delete db;
+	if (!iap)
+		return KErrNotFound;
+	TCommDbConnPref pref;
+	pref.SetIapId(iap);
+	pref.SetDialogPreference(ECommDbDialogPrefDoNotPrompt);
+	return gConn.Start(pref);
+	}
+
+extern "C" void phns_hold_connection(const char* aIap)
+	{
+	if (gConnOpen)
+		return;
+	if (gSockServ.Connect() != KErrNone)
+		return;
+	if (gConn.Open(gSockServ) != KErrNone)
+		{
+		gSockServ.Close();
+		return;
+		}
+	TUint count = 0;
+	TInt r = gConn.EnumerateConnections(count);
+	TInt how = 0;
+	if (r == KErrNone && count > 0)
+		{
+		TPckgBuf<TConnectionInfo> info;
+		r = gConn.GetConnectionInfo(1, info);
+		if (r == KErrNone)
+			r = gConn.Attach(info, RConnection::EAttachTypeNormal);
+		how = 1;
+		}
+	else
+		{
+		TBuf<32> name;
+		TPtrC8 n8(reinterpret_cast<const TUint8*>(aIap), User::StringLength(reinterpret_cast<const TUint8*>(aIap)));
+		name.Copy(n8.Left(32));
+		r = StartIapByName(name);
+		how = 2;
+		}
+	char b[96];
+	sprintf(b, "ns: hold connection (%s, %d up) -> %d", how == 1 ? "attach" : "start", (int)count, r);
+	phns_log(b);
+	if (r == KErrNone)
+		gConnOpen = ETrue;
+	else
+		{
+		gConn.Close();
+		gSockServ.Close();
+		}
+	}
 
 // trace: the serial log (Phorepoc), and C:\data\phenetsurf_trace.txt only when someone created that file (a device has no
 // debug port; nothing is written to a user's disk unasked)

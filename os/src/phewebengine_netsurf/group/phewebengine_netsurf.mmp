@@ -33,7 +33,7 @@ START RESOURCE	phewebengine_netsurf.rss
 TARGET			phewebengine_netsurf.rsc
 END
 
-LIBRARY			euser.lib efsrv.lib ecom.lib
+LIBRARY			euser.lib efsrv.lib ecom.lib esock.lib commdb.lib
 LIBRARY			libc.lib libm.lib libpthread.lib libz.lib
 UNPAGED
 SMPSAFE
