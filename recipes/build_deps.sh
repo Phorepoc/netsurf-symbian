@@ -22,6 +22,12 @@ for lib in $LIBS; do
     # curl's configure cannot run for this target: our curl_config.h (what it would have found) and the plain-C sources of
     # lib/Makefile.inc. curl.h needs Open C's <sys/select.h> for fd_set (forced in here and in NetSurf's libcurl.pc).
     cp -f "$NSS/recipes/curl_config.h" "$S/lib/curl_config.h"
+    # curl 8.10.1's mbedTLS backend takes mbedtls_ssl_read() == 0 (the server closed TCP without a close_notify) for an
+    # error: a body that ends with the connection (HTTP/1.1 with no Content-Length, e.g. wpt.live's Python server) failed
+    # with CURLE_RECV_ERROR (56, "ssl_read returned: (-0x0000)") after all of it had arrived. It is the end of the body.
+    sed -i 's/^    if(ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)$/    if(ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || !ret)   \/* Phorepoc: EOF *\//' \
+        "$S/lib/vtls/mbedtls.c"
+    grep -q 'Phorepoc: EOF' "$S/lib/vtls/mbedtls.c" || { echo "curl mbedtls.c EOF edit missed"; exit 1; }
     TLSDIR=$(adaptation_dir tls); MBED=$PHOREPOC_BUILD/tls/mbedtls-src
     [ -f "$TLS_LIB/libmbedtls.a" ] || { echo "no $TLS_LIB/libmbedtls.a (prebuild.sh builds it from the tls repository)"; exit 1; }
     # (-iquote lib/: the Open C line has stdapis/openssl on the path, whose rand.h shadowed curl's own "rand.h")
