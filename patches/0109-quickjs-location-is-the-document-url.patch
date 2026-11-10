@@ -1,0 +1,59 @@
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
+@@ -468,6 +468,20 @@
+ 	return JS_NewBool(ctx, success);
+ }
+ 
++/* the URL of the document the script belongs to (after redirects). The
++ * browser window's URL is the previous page while this one is still
++ * loading, so location/document.URL read during the load pointed at the
++ * last page (a script that rebuilt location.href then navigated back to it) */
++static struct nsurl *qjs_doc_url(struct jsthread *t)
++{
++	if (t->htmlc != NULL) {
++		struct nsurl *u = content_get_url(&t->htmlc->base);
++		if (u != NULL)
++			return u;
++	}
++	return browser_window_access_url(t->bw);
++}
++
+ /* ------------------------------------------------------------------ */
+ /* Node prototype                                                     */
+ /* ------------------------------------------------------------------ */
+@@ -1467,7 +1481,7 @@
+ 				      &src) != DOM_NO_ERR || src == NULL)
+ 		return NULL;
+ 
+-	base = browser_window_access_url(t->bw);
++	base = qjs_doc_url(t);
+ 	if (base != NULL)
+ 		nsurl_join(base, dom_string_data(src), &abs);
+ 	dom_string_unref(src);
+@@ -1962,7 +1976,7 @@
+ 
+ 	if (t == NULL || t->bw == NULL)
+ 		return JS_NewStringLen(ctx, "", 0);
+-	url = browser_window_access_url(t->bw);
++	url = qjs_doc_url(t);
+ 	return JS_NewString(ctx, url ? nsurl_access(url) : "");
+ }
+ 
+@@ -2380,7 +2394,7 @@
+ 
+ 	if (t == NULL || t->bw == NULL)
+ 		return JS_NewStringLen(ctx, "", 0);
+-	url = browser_window_access_url(t->bw);
++	url = qjs_doc_url(t);
+ 	if (url == NULL)
+ 		return JS_NewStringLen(ctx, "", 0);
+ 	comp = nsurl_get_component(url, part);
+@@ -2445,7 +2459,7 @@
+ 
+ 	if (t == NULL || t->bw == NULL)
+ 		return JS_NewStringLen(ctx, "", 0);
+-	url = browser_window_access_url(t->bw);
++	url = qjs_doc_url(t);
+ 	if (url == NULL)
+ 		return JS_NewStringLen(ctx, "", 0);
+ 	comp = nsurl_get_component(url, NSURL_SCHEME);
