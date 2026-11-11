@@ -330,7 +330,9 @@ static void gw_place_caret(struct gui_window *gw, int x, int y, int h, const str
 	int pw = 0;
 	const void *owner = gw->bw ? phns_focus_owner(browser_window_get_content(gw->bw), &pw) : NULL;
 	if (gw->focus && owner == gw->fowner) return;      /* the caret moved inside the same field */
-	if (gw->focus) post(gw, PHE_EV_FOCUS, 0, 0);       /* field to field: the old editor closes first */
+	post(gw, PHE_EV_FOCUS, 0, 0);                      /* a new field: any old editor closes first (the frontend mutes
+	                                                    * focus reports after a commit until a = 0; NetSurf's own
+	                                                    * REMOVE_CARET after the press has already cleared gw->focus) */
 	gw->fowner = owner;
 	capture_focus_value(gw);
 	gw->focus = 1;
