@@ -1,0 +1,75 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -2761,11 +2761,71 @@
+ global.Range = function () {};
+ global.Selection = function () {};
+ global.NamedNodeMap = function () {};
++/* new Image(): a detached <img> is never fetched by the layout, so load / error never fired (html5test waited for
++ * ever on its image-format probes). Setting src on a detached image fetches it here, sniffs the formats this build
++ * decodes (PNG, JPEG, GIF, BMP, ICO) and fires load (with naturalWidth / naturalHeight) or error. */
++function nsImgSize(u) {
++	function be16(i) { return (u[i] << 8) | u[i + 1]; }
++	function le16(i) { return u[i] | (u[i + 1] << 8); }
++	function le32(i) { return (u[i] | (u[i + 1] << 8) | (u[i + 2] << 16) | (u[i + 3] << 24)) >>> 0; }
++	if (u.length >= 24 && u[0] === 0x89 && u[1] === 0x50 && u[2] === 0x4e && u[3] === 0x47)
++		return [((u[16] << 24) | (u[17] << 16) | be16(18)) >>> 0, ((u[20] << 24) | (u[21] << 16) | be16(22)) >>> 0];
++	if (u.length >= 10 && u[0] === 0x47 && u[1] === 0x49 && u[2] === 0x46 && u[3] === 0x38)
++		return [le16(6), le16(8)];
++	if (u.length >= 26 && u[0] === 0x42 && u[1] === 0x4d)
++		return [le32(18), Math.abs(le32(22) | 0)];
++	if (u.length >= 22 && u[0] === 0 && u[1] === 0 && u[2] === 1 && u[3] === 0)
++		return [u[6] || 256, u[7] || 256];
++	if (u.length >= 4 && u[0] === 0xff && u[1] === 0xd8) {
++		for (var i = 2; i + 9 < u.length;) {
++			if (u[i] !== 0xff) { i++; continue; }
++			var m = u[i + 1];
++			if ((m >= 0xc0 && m <= 0xcf) && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return [be16(i + 7), be16(i + 5)];
++			i += 2 + be16(i + 2);
++		}
++	}
++	return null;
++}
++function nsImgFire(img, type) {
++	var ev = new Event(type);
++	try { __ns_call(img, type, ev); } catch (e) { reportError(e); }
++}
++function nsImgProbe(img, url) {
++	var gen = img.__ns_imgGen = (img.__ns_imgGen || 0) + 1;
++	if (!url) { setTimeout(function () { if (img.__ns_imgGen === gen) nsImgFire(img, 'error'); }, 0); return; }
++	fetch(url).then(function (r) {
++		if (!r.ok) throw new Error('status');
++		return r.arrayBuffer();
++	}).then(function (b) {
++		var sz = nsImgSize(new Uint8Array(b));
++		if (!sz) throw new Error('format');
++		if (img.__ns_imgGen !== gen) return;
++		def(img, 'naturalWidth', { value: sz[0], configurable: true });
++		def(img, 'naturalHeight', { value: sz[1], configurable: true });
++		def(img, 'complete', { value: true, configurable: true });
++		nsImgFire(img, 'load');
++	}).catch(function () {
++		if (img.__ns_imgGen !== gen) return;
++		def(img, 'complete', { value: true, configurable: true });
++		nsImgFire(img, 'error');
++	});
++}
++function nsDetachedImg(img) {
++	var d, o = Object.getPrototypeOf(img);
++	while (o && !(d = Object.getOwnPropertyDescriptor(o, 'src'))) o = Object.getPrototypeOf(o);
++	def(img, 'src', { configurable: true, enumerable: true,
++		get: function () { return d && d.get ? d.get.call(img) : (img.getAttribute('src') || ''); },
++		set: function (v) {
++			if (d && d.set) d.set.call(img, v); else img.setAttribute('src', v);
++			if (!img.isConnected) nsImgProbe(img, d && d.get ? d.get.call(img) : String(v));
++		} });
++	return img;
++}
+ global.Image = function (w, h) {
+ 	var img = document.createElement('img');
+ 	if (w !== undefined) img.width = w;
+ 	if (h !== undefined) img.height = h;
+-	return img;
++	return nsDetachedImg(img);
+ };
+ global.Option = function (text, value, dflt, sel) {
+ 	var o = document.createElement('option');
