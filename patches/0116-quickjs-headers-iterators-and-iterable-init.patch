@@ -1,0 +1,42 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -2027,7 +2027,6 @@
+ 	if (init === null || (typeof init !== 'object' && typeof init !== 'function'))
+ 		throw new TypeError("Failed to construct 'Headers': not a sequence or record");
+ 	var self = this;
+-	if (init instanceof Headers) { init._map.forEach(function (p) { self.append(p[0], p[1]); }); return; }
+ 	var it = init[Symbol.iterator];
+ 	if (it !== undefined && it !== null) {
+ 		if (typeof it !== 'function') throw new TypeError("Failed to construct 'Headers': not iterable");
+@@ -2059,18 +2058,20 @@
+ 	});
+ 	return out;
+ }
++/* the iterators share one prototype that inherits %IteratorPrototype% (WebIDL pair iterators) */
++var HdrIterProto = Object.create(Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())));
++Object.defineProperty(HdrIterProto, 'next', { configurable: true, enumerable: true, writable: true, value: function () {
++	var l = hdrSorted(this._h);
++	if (this._i >= l.length) return { value: undefined, done: true };
++	var p = l[this._i++];
++	return { value: this._k === 'key' ? p[0] : this._k === 'value' ? p[1] : [p[0], p[1]], done: false };
++} });
++Object.defineProperty(HdrIterProto, Symbol.toStringTag, { configurable: true, value: 'Headers Iterator' });
+ function hdrIter(h, kind) {
+-	var i = 0;
+-	var it = {
+-		next: function () {
+-			var l = hdrSorted(h);
+-			if (i >= l.length) return { value: undefined, done: true };
+-			var p = l[i++];
+-			return { value: kind === 'key' ? p[0] : kind === 'value' ? p[1] : [p[0], p[1]], done: false };
+-		}
+-	};
+-	it[Symbol.iterator] = function () { return this; };
+-	Object.defineProperty(it, Symbol.toStringTag, { value: 'Headers Iterator' });
++	var it = Object.create(HdrIterProto);
++	Object.defineProperty(it, '_h', { value: h });
++	Object.defineProperty(it, '_k', { value: kind });
++	Object.defineProperty(it, '_i', { value: 0, writable: true });
+ 	return it;
+ }
+ var hdrProto = {
