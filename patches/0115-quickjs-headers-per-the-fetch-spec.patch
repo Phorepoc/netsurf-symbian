@@ -1,0 +1,142 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -2007,32 +2007,110 @@
+ /* ------------------------------------------------------------------ */
+ /* fetch and XMLHttpRequest */
+ 
++/* Headers (Fetch spec): names are tokens, values are normalized and may not hold NUL/CR/LF (TypeError); iteration is
++ * sorted by lower-case name with combined values, Set-Cookie values kept apart */
++var HDR_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
++function hdrName(k) {
++	k = String(k);
++	if (!HDR_NAME.test(k)) throw new TypeError("Headers: invalid header name '" + k + "'");
++	return k.toLowerCase();
++}
++function hdrValue(v) {
++	v = String(v).replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '');
++	if (/[\0\r\n]/.test(v)) throw new TypeError('Headers: invalid header value');
++	return v;
++}
+ function Headers(init) {
+-	this._map = [];
+-	if (!init) return;
++	if (!(this instanceof Headers)) throw new TypeError("Failed to construct 'Headers': use the 'new' operator");
++	Object.defineProperty(this, '_map', { value: [], writable: true, enumerable: false, configurable: true });
++	if (init === undefined) return;
++	if (init === null || (typeof init !== 'object' && typeof init !== 'function'))
++		throw new TypeError("Failed to construct 'Headers': not a sequence or record");
+ 	var self = this;
+-	if (init instanceof Headers) init.forEach(function (v, k) { self.append(k, v); });
+-	else if (Array.isArray(init)) init.forEach(function (p) { self.append(p[0], p[1]); });
+-	else for (var k in init) if (hasOwn(init, k)) this.append(k, init[k]);
++	if (init instanceof Headers) { init._map.forEach(function (p) { self.append(p[0], p[1]); }); return; }
++	var it = init[Symbol.iterator];
++	if (it !== undefined && it !== null) {
++		if (typeof it !== 'function') throw new TypeError("Failed to construct 'Headers': not iterable");
++		var pairs = [];
++		for (var p of init) {
++			if (p === null || typeof p !== 'object') throw new TypeError("Failed to construct 'Headers': a pair is not a sequence");
++			var a = Array.from(p);
++			if (a.length !== 2) throw new TypeError("Failed to construct 'Headers': a pair needs 2 items");
++			pairs.push(a);
++		}
++		pairs.forEach(function (a) { self.append(a[0], a[1]); });
++		return;
++	}
++	Reflect.ownKeys(init).forEach(function (k) {
++		var d = Reflect.getOwnPropertyDescriptor(init, k);
++		if (d && d.enumerable) {
++			if (typeof k === 'symbol') throw new TypeError("Failed to construct 'Headers': a symbol key");
++			self.append(k, init[k]);
++		}
++	});
++}
++function hdrSorted(h) {
++	var out = [], names = [];
++	h._map.forEach(function (p) { if (names.indexOf(p[0]) < 0) names.push(p[0]); });
++	names.sort();
++	names.forEach(function (n) {
++		if (n === 'set-cookie') h._map.forEach(function (p) { if (p[0] === n) out.push([n, p[1]]); });
++		else out.push([n, h.get(n)]);
++	});
++	return out;
+ }
+-Headers.prototype = {
++function hdrIter(h, kind) {
++	var i = 0;
++	var it = {
++		next: function () {
++			var l = hdrSorted(h);
++			if (i >= l.length) return { value: undefined, done: true };
++			var p = l[i++];
++			return { value: kind === 'key' ? p[0] : kind === 'value' ? p[1] : [p[0], p[1]], done: false };
++		}
++	};
++	it[Symbol.iterator] = function () { return this; };
++	Object.defineProperty(it, Symbol.toStringTag, { value: 'Headers Iterator' });
++	return it;
++}
++var hdrProto = {
+ 	append: function (k, v) {
+-		k = toStr(k).toLowerCase(); v = toStr(v).trim();
+-		for (var i = 0; i < this._map.length; i++)
+-			if (this._map[i][0] === k) { this._map[i][1] += ', ' + v; return; }
+-		this._map.push([k, v]);
++		if (arguments.length < 2) throw new TypeError("Headers.append: 2 arguments required");
++		this._map.push([hdrName(k), hdrValue(v)]);
++	},
++	set: function (k, v) {
++		if (arguments.length < 2) throw new TypeError("Headers.set: 2 arguments required");
++		k = hdrName(k); v = hdrValue(v);
++		var done = false;
++		this._map = this._map.filter(function (p) {
++			if (p[0] !== k) return true;
++			if (done) return false;
++			p[1] = v; done = true; return true;
++		});
++		if (!done) this._map.push([k, v]);
++	},
++	get: function (k) {
++		k = hdrName(k);
++		var v = this._map.filter(function (p) { return p[0] === k; }).map(function (p) { return p[1]; });
++		return v.length ? v.join(', ') : null;
++	},
++	has: function (k) { k = hdrName(k); return this._map.some(function (p) { return p[0] === k; }); },
++	delete: function (k) { k = hdrName(k); this._map = this._map.filter(function (p) { return p[0] !== k; }); },
++	forEach: function (f, t) {
++		if (typeof f !== 'function') throw new TypeError('Headers.forEach: not a function');
++		var self = this;
++		hdrSorted(this).forEach(function (p) { f.call(t, p[1], p[0], self); });
+ 	},
+-	set: function (k, v) { this.delete(k); this.append(k, v); },
+-	get: function (k) { k = toStr(k).toLowerCase(); for (var i = 0; i < this._map.length; i++) if (this._map[i][0] === k) return this._map[i][1]; return null; },
+-	has: function (k) { return this.get(k) !== null; },
+-	delete: function (k) { k = toStr(k).toLowerCase(); this._map = this._map.filter(function (p) { return p[0] !== k; }); },
+-	forEach: function (f, t) { var self = this; this._map.forEach(function (p) { f.call(t, p[1], p[0], self); }); },
+-	keys: function () { return this._map.map(function (p) { return p[0]; })[Symbol.iterator](); },
+-	values: function () { return this._map.map(function (p) { return p[1]; })[Symbol.iterator](); },
+-	entries: function () { return this._map.map(function (p) { return [p[0], p[1]]; })[Symbol.iterator](); },
+-	getSetCookie: function () { return []; }
++	keys: function () { return hdrIter(this, 'key'); },
++	values: function () { return hdrIter(this, 'value'); },
++	entries: function () { return hdrIter(this, 'key+value'); },
++	getSetCookie: function () {
++		return this._map.filter(function (p) { return p[0] === 'set-cookie'; }).map(function (p) { return p[1]; });
++	}
+ };
+-Headers.prototype[Symbol.iterator] = Headers.prototype.entries;
++Object.keys(hdrProto).forEach(function (k) { method(Headers.prototype, k, hdrProto[k]); });
++method(Headers.prototype, Symbol.iterator, Headers.prototype.entries);
++def(Headers.prototype, Symbol.toStringTag, { value: 'Headers', writable: false });
+ global.Headers = Headers;
+ 
+ function parseRawHeaders(raw) {
+@@ -2041,7 +2119,7 @@
+ 	raw.split(/\r?\n/).forEach(function (line) {
+ 		if (/^HTTP\//i.test(line)) { status = line.replace(/^\S+\s+\d+\s*/, ''); return; }
+ 		var i = line.indexOf(':');
+-		if (i > 0) h.append(line.slice(0, i).trim(), line.slice(i + 1).trim());
++		if (i > 0) try { h.append(line.slice(0, i).trim(), line.slice(i + 1).trim()); } catch (e) {}   /* a malformed line is skipped */
+ 	});
+ 	return { headers: h, statusText: status };
+ }
