@@ -1,0 +1,19 @@
+--- a/netsurf/content/handlers/html/interaction.c	2026-11-11 08:20:00.000000000 +0000
++++ b/netsurf/content/handlers/html/interaction.c	2026-11-11 08:20:00.000000000 +0000
+@@ -1949,3 +1949,16 @@
+ 	if (!fc || fc->type == GADGET_PASSWORD || !fc->data.text.ta) return 0;
+ 	return textarea_get_text(fc->data.text.ta, buf, len) < 0 ? 0 : 1;
+ }
++
++/* Phorepoc: which text field owns the focus (an opaque id, NULL = none), and whether it is a password field, so the
++ * frontend sees a focus move from one field to another (PHE_EV_FOCUS a = 0 then a = 2, b = 1 for a password). */
++const void *phns_focus_owner(struct hlcache_handle *h, int *password)
++{
++	html_content *html;
++	*password = 0;
++	if (!h || content_get_type(h) != CONTENT_HTML) return NULL;
++	html = (html_content *)hlcache_handle_get_content(h);
++	if (!html || html->focus_type != HTML_FOCUS_TEXTAREA || !html->focus_owner.textarea) return NULL;
++	*password = html->focus_owner.textarea->gadget && html->focus_owner.textarea->gadget->type == GADGET_PASSWORD;
++	return html->focus_owner.textarea;
++}

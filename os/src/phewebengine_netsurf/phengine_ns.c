@@ -71,6 +71,7 @@ struct gui_window {
 	nsfb_t *nsfb;
 	int w, h, sx, sy, cw, ch;
 	int loading, progress, sec, can_back, can_fwd, focus, dirty;
+	const void *fowner;                            /* the focused field (patch 0114), to see a field-to-field move */
 	int down;
 	char url[1024], title[256], status[256], err[128];
 	char fval[1024];                               /* PHE_STR_FOCUS_VALUE: the focused text field (never a password) */
@@ -266,7 +267,7 @@ static nserror gw_event(struct gui_window *gw, enum gui_window_event ev)
 	switch (ev) {
 	case GW_EVENT_UPDATE_EXTENT: update_extent(gw); break;
 	case GW_EVENT_REMOVE_CARET:
-		if (gw->focus) { gw->focus = 0; post(gw, PHE_EV_FOCUS, 0, 0); }
+		if (gw->focus) { gw->focus = 0; gw->fowner = NULL; post(gw, PHE_EV_FOCUS, 0, 0); }
 		break;
 	case GW_EVENT_START_THROBBER:
 		pthread_mutex_lock(&mu); gw->loading = 1; gw->progress = 10; pthread_mutex_unlock(&mu);
@@ -314,6 +315,7 @@ static void gw_set_pointer(struct gui_window *gw, enum gui_pointer_shape s) { (v
 /* the focused text field's value (engine thread): the frontend's editor starts with it (PHE_STR_FOCUS_VALUE).
  * A password field gives "" (its text is never shown in clear). */
 int phns_focus_value(struct hlcache_handle *h, char *buf, unsigned int len);   /* patch 0110 (html/interaction.c) */
+const void *phns_focus_owner(struct hlcache_handle *h, int *password);         /* patch 0114 */
 static void capture_focus_value(struct gui_window *gw)
 {
 	char tmp[sizeof gw->fval];
@@ -325,8 +327,14 @@ static void capture_focus_value(struct gui_window *gw)
 static void gw_place_caret(struct gui_window *gw, int x, int y, int h, const struct rect *clip)
 {
 	(void)x; (void)y; (void)h; (void)clip;
-	if (!gw->focus) capture_focus_value(gw);
-	if (!gw->focus) { gw->focus = 1; post(gw, PHE_EV_FOCUS, 2, 0); }
+	int pw = 0;
+	const void *owner = gw->bw ? phns_focus_owner(browser_window_get_content(gw->bw), &pw) : NULL;
+	if (gw->focus && owner == gw->fowner) return;      /* the caret moved inside the same field */
+	if (gw->focus) post(gw, PHE_EV_FOCUS, 0, 0);       /* field to field: the old editor closes first */
+	gw->fowner = owner;
+	capture_focus_value(gw);
+	gw->focus = 1;
+	post(gw, PHE_EV_FOCUS, 2, pw);                     /* b = 1: a password field (a masked editor) */
 }
 
 static struct gui_window_table window_table = {
