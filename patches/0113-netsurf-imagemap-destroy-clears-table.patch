@@ -1,0 +1,10 @@
+--- a/netsurf/content/handlers/html/imagemap.c	2026-11-10 23:51:03.523845074 +0000
++++ b/netsurf/content/handlers/html/imagemap.c	2026-11-10 23:51:03.532434575 +0000
+@@ -221,6 +221,7 @@
+ 	}
+ 
+ 	free(c->imagemaps);
++	c->imagemaps = NULL;	/* Phorepoc: the box rebuild extracts again into a new table (use after free on Acid3) */
+ }
+ 
+ /**
