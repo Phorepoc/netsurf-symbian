@@ -1,0 +1,123 @@
+--- a/netsurf/content/handlers/html/html.h
++++ b/netsurf/content/handlers/html/html.h
+@@ -85,6 +85,7 @@
+ 	bool async;
+ 	bool defer;
+ 	bool module; /**< ES module script (type="module") */
++	struct dom_node *node; /**< the script element (external scripts: load / error events) */
+ };
+ 
+ 
+--- a/netsurf/content/handlers/html/script.c
++++ b/netsurf/content/handlers/html/script.c
+@@ -62,10 +62,22 @@
+ 		script_handler_t *handler, const uint8_t *data, size_t size,
+ 		const char *url)
+ {
++	/* (the handler may add scripts, which reallocates the array s points into) */
++	dom_node *node = s->node;
+ 	if (s->module)
+ 		js_exec_module(thread, data, size, url);
+ 	else
+ 		handler(thread, data, size, url);
++	/* HTML: an external script fires load at its element once it ran */
++	if (node != NULL)
++		js_fire_event(thread, "load", NULL, node);
++}
++
++/* an external script's fetch failed: error at its element (last use of s) */
++static void html_script_fire_error(html_content *c, struct html_script *s)
++{
++	if (c->jsthread != NULL && s->node != NULL)
++		js_fire_event(c->jsthread, "error", NULL, s->node);
+ }
+ 
+ /* exported internal interface documented in html/html_internal.h */
+@@ -160,6 +172,7 @@
+ 	nscript->defer = false;
+ 	nscript->module = false;
+ 	nscript->data.handle = NULL;
++	nscript->node = NULL;
+ 
+ 	nscript->type = type;
+ 
+@@ -212,6 +225,7 @@
+ 		s->data.handle = NULL;
+ 		parent->base.active--;
+ 		NSLOG(netsurf, INFO, "%d fetches active", parent->base.active);
++		html_script_fire_error(parent, s);
+ 
+ 		break;
+ 
+@@ -275,6 +289,7 @@
+ 		s->data.handle = NULL;
+ 		parent->base.active--;
+ 		NSLOG(netsurf, INFO, "%d fetches active", parent->base.active);
++		html_script_fire_error(parent, s);
+ 
+ 		break;
+ 
+@@ -366,6 +381,7 @@
+ 		NSLOG(netsurf, INFO, "%d fetches active", parent->base.active);
+ 
+ 		s->already_started = true;
++		html_script_fire_error(parent, s);
+ 
+ 		/* continue parse */
+ 		if (parent->parser != NULL && active_sync_scripts == 0) {
+@@ -487,6 +503,7 @@
+ 	}
+ 	nscript->module = dom_string_caseless_lwc_isequal(mimetype,
+ 			corestring_lwc_module);
++	nscript->node = (dom_node *)dom_node_ref(node);
+ 
+ 	/* set up child fetch encoding and quirks */
+ 	child.charset = c->encoding;
+@@ -692,6 +709,9 @@
+ 		if (html->scripts[i].mimetype != NULL) {
+ 			dom_string_unref(html->scripts[i].mimetype);
+ 		}
++		if (html->scripts[i].node != NULL) {
++			dom_node_unref(html->scripts[i].node);
++		}
+ 
+ 		switch (html->scripts[i].type) {
+ 		case HTML_SCRIPT_INLINE:
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
+@@ -3231,8 +3231,33 @@
+ 
+ 	if (t->closed)
+ 		return true;
+-	if (target != NULL)
+-		return true; /* only window-targeted events, like dukky */
++	if (target != NULL) {
++		/* an element-targeted event from the core (a script element's
++		 * load / error): its on<type> property and listeners */
++		if (dom_string_create((const uint8_t *)type, strlen(type),
++				      &tds) != DOM_NO_ERR)
++			return true;
++		if (dom_event_create(&evt) != DOM_NO_ERR) {
++			dom_string_unref(tds);
++			return true;
++		}
++		dom_event_init(evt, tds, false, false);
++		dom_string_unref(tds);
++		args[0] = qjs_dom_wrap_node(t, target);
++		args[1] = JS_NewString(ctx, type);
++		args[2] = qjs_dom_wrap_event(t, evt);
++		qjs_deadline_start(t);
++		ret = qjs_call_helper(ctx, "__ns_call", 3, args);
++		qjs_deadline_stop(t);
++		JS_FreeValue(ctx, ret);
++		JS_FreeValue(ctx, args[0]);
++		JS_FreeValue(ctx, args[1]);
++		JS_FreeValue(ctx, args[2]);
++		qjs_run_jobs(ctx);
++		qjs_dom_event_cleanup(t, evt);
++		dom_event_unref(evt);
++		return true;
++	}
+ 
+ 	if (dom_string_create((const uint8_t *)type, strlen(type),
+ 			      &tds) != DOM_NO_ERR)
