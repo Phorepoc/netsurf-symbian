@@ -267,7 +267,7 @@ static nserror gw_event(struct gui_window *gw, enum gui_window_event ev)
 	switch (ev) {
 	case GW_EVENT_UPDATE_EXTENT: update_extent(gw); break;
 	case GW_EVENT_REMOVE_CARET:
-		if (gw->focus) { gw->focus = 0; gw->fowner = NULL; post(gw, PHE_EV_FOCUS, 0, 0); }
+		if (gw->focus) { gw->focus = 0; post(gw, PHE_EV_FOCUS, 0, 0); }   /* fowner stays: NetSurf removes the caret after each press */
 		break;
 	case GW_EVENT_START_THROBBER:
 		pthread_mutex_lock(&mu); gw->loading = 1; gw->progress = 10; pthread_mutex_unlock(&mu);
@@ -297,6 +297,7 @@ static nserror gw_set_url(struct gui_window *gw, struct nsurl *url)
 	pthread_mutex_lock(&mu);
 	strncpy(gw->url, s, sizeof gw->url - 1); gw->url[sizeof gw->url - 1] = 0;
 	gw->sec = (strncmp(s, "https:", 6) == 0) ? PHE_SEC_SECURE : PHE_SEC_NONE;
+	gw->fowner = NULL;                                 /* a new document: no field has the focus */
 	gw->title[0] = 0;
 	pthread_mutex_unlock(&mu);
 	refresh_state(gw);
@@ -329,10 +330,13 @@ static void gw_place_caret(struct gui_window *gw, int x, int y, int h, const str
 	(void)x; (void)y; (void)h; (void)clip;
 	int pw = 0;
 	const void *owner = gw->bw ? phns_focus_owner(browser_window_get_content(gw->bw), &pw) : NULL;
-	if (gw->focus && owner == gw->fowner) return;      /* the caret moved inside the same field */
-	post(gw, PHE_EV_FOCUS, 0, 0);                      /* a new field: any old editor closes first (the frontend mutes
-	                                                    * focus reports after a commit until a = 0; NetSurf's own
-	                                                    * REMOVE_CARET after the press has already cleared gw->focus) */
+	if (owner == gw->fowner) {                         /* the same field: the caret moved, or the frontend's commit
+	                                                    * (set_field) put it back; a = 2 alone, which stays muted */
+		if (!gw->focus) { gw->focus = 1; capture_focus_value(gw); post(gw, PHE_EV_FOCUS, 2, pw); }
+		return;
+	}
+	post(gw, PHE_EV_FOCUS, 0, 0);                      /* another field: the old editor closes first (and the
+	                                                    * frontend's post-commit mute lifts) */
 	gw->fowner = owner;
 	capture_focus_value(gw);
 	gw->focus = 1;
