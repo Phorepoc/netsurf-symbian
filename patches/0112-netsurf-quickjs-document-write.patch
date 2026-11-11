@@ -1,0 +1,67 @@
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_dom.c	2026-11-10 23:40:39.335840595 +0000
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_dom.c	2026-11-10 23:40:39.352463247 +0000
+@@ -2224,14 +2224,51 @@
+ 	return ret;
+ }
+ 
++/* Phorepoc: document.write/writeln insert into the running parser, as the duktape binding does
++ * (Document.bnd); a parse-time write (Acid3's iframes, ad/analytics snippets) was dropped before. */
++static JSValue
++doc_write_common(JSContext *ctx, JSValueConst this_val,
++		 int argc, JSValueConst *argv, bool nl)
++{
++	dom_node *node = qjs_this_node(ctx, this_val);
++	struct html_content *htmlc = NULL;
++	int i;
++
++	if (node == NULL ||
++	    dom_node_get_user_data(node,
++				   corestring_dom___ns_key_html_content_data,
++				   (void **)&htmlc) != DOM_NO_ERR ||
++	    htmlc == NULL || htmlc->parser == NULL) {
++		NSLOG(netsurf, DEBUG, "document.write: no parser");
++		return JS_UNDEFINED;
++	}
++	for (i = 0; i < argc; i++) {
++		size_t len = 0;
++		const char *text = JS_ToCStringLen(ctx, &len, argv[i]);
++		if (text == NULL)
++			return JS_EXCEPTION;
++		dom_hubbub_parser_insert_chunk(htmlc->parser,
++					       (const uint8_t *)text, len);
++		JS_FreeCString(ctx, text);
++	}
++	if (nl)
++		dom_hubbub_parser_insert_chunk(htmlc->parser,
++					       (const uint8_t *)"\n", 1);
++	return JS_UNDEFINED;
++}
++
+ static JSValue
+ doc_write(JSContext *ctx, JSValueConst this_val,
+ 	  int argc, JSValueConst *argv)
+ {
+-	/* parse-time document.write needs parser interleaving that this
+-	 * backend does not support yet; log and drop */
+-	NSLOG(netsurf, DEBUG, "document.write ignored (quickjs backend)");
+-	return JS_UNDEFINED;
++	return doc_write_common(ctx, this_val, argc, argv, false);
++}
++
++static JSValue
++doc_writeln(JSContext *ctx, JSValueConst this_val,
++	    int argc, JSValueConst *argv)
++{
++	return doc_write_common(ctx, this_val, argc, argv, true);
+ }
+ 
+ static const JSCFunctionListEntry qjs_document_funcs[] = {
+@@ -2253,7 +2291,7 @@
+ 		     doc_createDocumentFragment),
+ 	JS_CFUNC_DEF("createEvent", 1, doc_createEvent),
+ 	JS_CFUNC_DEF("write", 1, doc_write),
+-	JS_CFUNC_DEF("writeln", 1, doc_write),
++	JS_CFUNC_DEF("writeln", 1, doc_writeln),
+ 	JS_CFUNC_DEF("querySelector", 1, el_querySelector),
+ 	JS_CFUNC_DEF("querySelectorAll", 1, el_querySelectorAll),
+ 	JS_CFUNC_DEF("getElementsByTagName", 1, el_getElementsByTagName),
