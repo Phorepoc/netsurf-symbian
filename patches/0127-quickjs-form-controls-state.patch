@@ -1,0 +1,65 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -661,7 +661,15 @@
+ /* form control value/checked, backed by the DOM form state */
+ accessor(ElementP, 'value', function () {
+ 	var t = this.tagName;
+-	if (t === 'INPUT' || t === 'TEXTAREA') return ns.inputValue ? ns.inputValue(this) : toStr(this.getAttribute('value'));
++	if (t === 'INPUT' || t === 'TEXTAREA') {
++		if (this.__ns_val !== undefined) {
++			if (!this.isConnected) return this.__ns_val;
++			var dv = this.__ns_val;
++			this.__ns_val = undefined;
++			if (ns.setInputValue) ns.setInputValue(this, dv); else this.setAttribute('value', dv);
++		}
++		return ns.inputValue ? ns.inputValue(this) : toStr(this.getAttribute('value'));
++	}
+ 	if (t === 'SELECT') {
+ 		var o = this.selectedOptions[0];
+ 		return o ? o.value : '';
+@@ -674,6 +682,12 @@
+ 	var t = this.tagName;
+ 	v = toStr(v);
+ 	if (t === 'INPUT' || t === 'TEXTAREA') {
++		/* value mode "value": a detached control keeps a dirty value and leaves the content attribute alone; it
++		 * reaches the DOM form state when the control is read while connected (the widget lives there) */
++		if (t === 'TEXTAREA' || !/^(hidden|submit|image|reset|button|checkbox|radio|file)$/.test(this.type)) {
++			if (!this.isConnected) { this.__ns_val = v; return; }
++			this.__ns_val = undefined;
++		}
+ 		if (ns.setInputValue) ns.setInputValue(this, v);
+ 		else this.setAttribute('value', v);
+ 	} else if (t === 'SELECT') {
+@@ -689,6 +703,15 @@
+ 	return ns.inputChecked ? ns.inputChecked(this) : this.hasAttribute('checked');
+ }, function (v) {
+ 	if (this.tagName !== 'INPUT') return;
++	if (v && this.type === 'radio' && this.name) {
++		/* checking a radio button unchecks the others of its group: same tree, form owner and name */
++		var self = this, form = this.form, name = this.name, root = rgRoot(this);
++		qsa(root, 'input').forEach(function (o) {
++			if (o !== self && o.type === 'radio' && o.name === name && o.form === form && o.checked) {
++				if (ns.setInputChecked) ns.setInputChecked(o, false); else o.removeAttribute('checked');
++			}
++		});
++	}
+ 	if (ns.setInputChecked) ns.setInputChecked(this, !!v);
+ 	else if (v) this.setAttribute('checked', ''); else this.removeAttribute('checked');
+ });
+@@ -711,6 +734,16 @@
+ 	}
+ 	if (v) this.setAttribute('selected', ''); else this.removeAttribute('selected');
+ });
++accessor(ElementP, 'defaultSelected', function () { return this.tagName === 'OPTION' ? this.hasAttribute('selected') : undefined; },
++	function (v) { if (this.tagName !== 'OPTION') return; if (v) this.setAttribute('selected', ''); else this.removeAttribute('selected'); });
++(function () {
++	var old = Object.getOwnPropertyDescriptor(ElementP, 'length');
++	accessor(ElementP, 'length', function () {
++		if (this.tagName === 'FORM') return this.elements.length;
++		if (this.tagName === 'SELECT') return this.options.length;
++		return old && old.get ? old.get.call(this) : undefined;
++	}, function (v) { if (old && old.set) old.set.call(this, v); });
++})();
+ accessor(ElementP, 'options', function () {
+ 	return this.tagName === 'SELECT' || this.tagName === 'DATALIST' ? NodeList(qsa(this, 'option')) : undefined;
+ });
