@@ -5,7 +5,7 @@ of NetSurf 3.12-dev with its QuickJS-ng JavaScript handler, and the libraries it
 Project and its contributors, and is licensed under the GNU General Public License version 2 (GPL-2.0), as are the files of
 this package that link it (the engine core and the plug-in adapter). The other libraries in the DLL and their licences:
 NetSurf's libraries (MIT), libutf8proc (MIT), quickjs-ng (MIT), curl (curl licence), mbedTLS (Apache-2.0), libpng (libpng
-licence), IJG libjpeg (IJG licence), libwebp (BSD-3-Clause), FreeType (FreeType License). The CA certificate bundle is Mozilla's root list as published
+licence), IJG libjpeg (IJG licence), libwebp (BSD-3-Clause), Expat (MIT), FreeType (FreeType License). The CA certificate bundle is Mozilla's root list as published
 by curl, under the Mozilla Public License 2.0. All licence texts are installed with this package in
 \resource\phweb\netsurf\licences\ (NOTICE lists which file covers what).
 
@@ -18,7 +18,7 @@ it from:
 
   1. The unmodified upstream sources, each pinned by SHA-256 in sources.lock of the repository below (the NetSurf tree from
      https://github.com/etonedemid/netsurf-switch at commit 29d910fc28e6e0c816eea4a86bae4e40f2ac699d, quickjs-ng 0.17.0 from
-     https://github.com/quickjs-ng/quickjs, curl, libpng, libjpeg, libwebp, FreeType, and mbedTLS through the tls repository).
+     https://github.com/quickjs-ng/quickjs, curl, libpng, libjpeg, libwebp, Expat, FreeType, and mbedTLS through the tls repository).
   2. Our changes to them (patches/), our own files, and the scripts that fetch, patch, build and package the engine:
        https://github.com/Phorepoc/netsurf-symbian   (the release tag of this package)
      with the toolchain images and build tools in https://github.com/Phorepoc/toolchain and https://github.com/Phorepoc/pdk,

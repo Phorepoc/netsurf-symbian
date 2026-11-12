@@ -7,3 +7,4 @@ libpng	libpng-1.6.44.tar.gz	8c25a7792099a0089fa1cc76c94260d0bb3f1ec52b93671b572f
 libjpeg	jpegsrc.v9f.tar.gz	04705c110cb2469caa79fb71fba3d7bf834914706e9641a4589485c1f832565b	https://www.ijg.org/files/jpegsrc.v9f.tar.gz
 libwebp	libwebp-1.4.0.tar.gz	61f873ec69e3be1b99535634340d5bde750b2e4447caa1db9f61be3fd49ab1e5	https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.4.0.tar.gz
 freetype	freetype-2.13.3.tar.xz	0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289	https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz
+expat	expat-2.6.4.tar.xz	a695629dae047055b37d50a0ff4776d1d45d0a4c842cf4ccee158441f55ff7ee	https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.xz

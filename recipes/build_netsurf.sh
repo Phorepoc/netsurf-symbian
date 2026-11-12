@@ -28,7 +28,7 @@ NS_LIBSET="libwapcaplet libparserutils libhubbub libcss libdom libnsutils libnsb
 LIBS=${*:-$NS_LIBSET netsurf}
 
 bash "$NSS/recipes/fetch_sources.sh" netsurf >/dev/null || exit 1
-for f in "$OUT/lib/libcurl.a" "$OUT/lib/libpng.a" "$OUT/lib/libjpeg.a" "$OUT/lib/libwebp.a" "$OUT/lib/libfreetype.a" "$OUT/lib/libquickjs.a"; do
+for f in "$OUT/lib/libcurl.a" "$OUT/lib/libpng.a" "$OUT/lib/libjpeg.a" "$OUT/lib/libwebp.a" "$OUT/lib/libexpat.a" "$OUT/lib/libfreetype.a" "$OUT/lib/libquickjs.a"; do
     [ -f "$f" ] || { echo "no $f -- run recipes/build_deps.sh first"; exit 1; }
 done
 
@@ -77,11 +77,12 @@ printf 'Name: libwebp\nDescription: libwebp\nVersion: 1.4.0\nCflags: -I%s\nLibs:
 printf 'Name: libcurl\nDescription: libcurl\nVersion: 8.10.1\nCflags: -I%s -include sys/select.h\nLibs:\n' "$OUT/curl-include" > "$PCDIR/libcurl.pc"
 export PKG_CONFIG_PATH=$PCDIR PKG_CONFIG_LIBDIR=$PCDIR
 
-# The browser: core + framebuffer front end; curl (+ mbedTLS under it), PNG/JPEG/WebP, FreeType fonts, the QuickJS-ng handler.
+# The browser: core + framebuffer front end; curl (+ mbedTLS under it), PNG/JPEG/WebP, SVG (libsvgtiny over libdom's Expat XML binding), FreeType fonts,
+# the QuickJS-ng handler.
 # Off: OpenSSL (curl uses mbedTLS), Duktape, JPEG XL, RSVG, RISC OS sprites, video, PDF export, the sanitizer.
 NS_BROWSER_ARGS=(TARGET=framebuffer NETSURF_USE_CURL=YES NETSURF_USE_OPENSSL=NO NETSURF_USE_JPEG=YES NETSURF_USE_PNG=YES
     NETSURF_USE_DUKTAPE=NO NETSURF_USE_WEBP=YES NETSURF_USE_JPEGXL=NO NETSURF_USE_RSVG=NO NETSURF_USE_ROSPRITE=NO
-    NETSURF_USE_VIDEO=NO NETSURF_USE_HARU_PDF=NO NETSURF_USE_LIBICONV_PLUG=NO NETSURF_USE_NSSVG=NO
+    NETSURF_USE_VIDEO=NO NETSURF_USE_HARU_PDF=NO NETSURF_USE_LIBICONV_PLUG=NO NETSURF_USE_NSSVG=YES
     NETSURF_FB_FONTLIB=freetype NETSURF_USE_SANITIZER=NO NETSURF_FRAMEBUFFER_RESOURCES=/resource/phenetsurf/
     NETSURF_USE_QUICKJS=YES)
 
@@ -113,8 +114,10 @@ for lib in $LIBS; do
     # IFLAGS: the browser's own -I . include $(OBJROOT) (the libs put theirs in CFLAGS)
     libcf="$(echo "$info" | sed -n 's/^@@IFLAGS=//p') $(echo "$info" | sed -n 's/^@@CFLAGS=//p')"
     case $lib in
-        # the expat XML binding: NetSurf's HTML path is the hubbub one
-        libdom) srcs=$(echo "$srcs" | tr ' ' '\n' | grep -v '^bindings/xml/' | tr '\n' ' ') ;;
+        # NetSurf's HTML path is the hubbub binding; the XML one (dom_xml_parser_*, which libsvgtiny parses SVG with) is
+        # the Expat binding, over build_deps.sh's libexpat (its headers in $OUT/img-include). Without it the SVG handler
+        # linked to stubs and every SVG killed the engine thread (EUSRNIMP).
+        libdom) srcs="$(echo "$srcs" | tr ' ' '\n' | grep -v '^bindings/xml/' | tr '\n' ' ') bindings/xml/expat_xmlparser.c" ;;
     esac
     # the library's own -D / -I (its warnings, -O, -std, -pedantic, -Werror are replaced by ours), FIRST: the Open C include
     # tree is one flat namespace of generic names (palette.h, surface.h...) that would shadow a library's own quoted headers.

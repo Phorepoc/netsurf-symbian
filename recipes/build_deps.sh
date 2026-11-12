@@ -4,12 +4,12 @@
 #
 # build_deps.sh [lib ...] -- the C libraries the engine links besides NetSurf's own, each as a static archive for Open C /
 # P.I.P.S. (ARCH=x32 default, or arm), compiled with the pdk's Open C client line (tools/openc_cflags.py):
-#   libcurl 8.10.1 (over the tls repository's mbedTLS), libpng 1.6.44, IJG libjpeg 9f, libwebp 1.4.0 (decoder), FreeType 2.13.3, quickjs-ng 0.17.0
+#   libcurl 8.10.1 (over the tls repository's mbedTLS), libpng 1.6.44, IJG libjpeg 9f, libwebp 1.4.0 (decoder), Expat 2.6.4, FreeType 2.13.3, quickjs-ng 0.17.0
 # Out: $OUT/lib/*.a and the headers the NetSurf build uses: $OUT/{curl,img,ft,qjs}-include.
 set -eu
 . "$(dirname "${BASH_SOURCE[0]}")/env.sh"
-LIBS=${*:-libcurl libpng libjpeg libwebp libfreetype libquickjs}
-bash "$NSS/recipes/fetch_sources.sh" curl libpng libjpeg libwebp freetype quickjs >/dev/null
+LIBS=${*:-libcurl libpng libjpeg libwebp libexpat libfreetype libquickjs}
+bash "$NSS/recipes/fetch_sources.sh" curl libpng libjpeg libwebp expat freetype quickjs >/dev/null
 openc_flags
 W=$V/deps
 mkdir -p "$W"
@@ -78,6 +78,14 @@ for lib in $LIBS; do
         grep -vE '/(enc|cost|ssim|lossless_enc)[^/]*\.c$|/(bit_writer|huffman_encode|quant_levels)_utils\.c$|/palette\.c$' |
         archive_lib libwebp "$S"
     mkdir -p "$OUT/img-include/webp"; cp "$S"/src/webp/decode.h "$S"/src/webp/types.h "$OUT/img-include/webp/"
+    ;;
+  libexpat)
+    # libdom's XML binding (SVG documents). expat_config.h = what its configure finds here; no arc4random / getrandom, so
+    # the hash salt comes from the time (XML_POOR_ENTROPY).
+    S=$W/expat; unpack expat "$S"
+    write_flags libexpat "${XF[@]}" -O2 -DHAVE_EXPAT_CONFIG_H -DXML_POOR_ENTROPY -I"$NSS/recipes" -iquote "$S/lib"
+    printf '%s\n' lib/xmlparse.c lib/xmlrole.c lib/xmltok.c | archive_lib libexpat "$S"
+    mkdir -p "$OUT/img-include"; cp "$S"/lib/expat.h "$S"/lib/expat_external.h "$OUT/img-include/"
     ;;
   libquickjs)
     S=$W/quickjs; unpack quickjs "$S"
