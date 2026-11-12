@@ -1,0 +1,111 @@
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_native.c
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_native.c
+@@ -939,6 +939,34 @@
+ 	return JS_NewString(ctx, nsurl_access(t->htmlc->base_url));
+ }
+ 
++/** __ns.doctypeIds(node) -> [publicId, systemId] of a DocumentType node */
++static JSValue nat_doctype_ids(JSContext *ctx, JSValueConst this_val,
++		int argc, JSValueConst *argv)
++{
++	struct jsthread *t = nat_thread(ctx);
++	dom_node *node;
++	dom_string *pub = NULL, *sys = NULL;
++	JSValue arr;
++
++	if (t == NULL || argc < 1)
++		return JS_NULL;
++	node = nat_node(t, argv[0]);
++	if (node == NULL)
++		return JS_NULL;
++	arr = JS_NewArray(ctx);
++	dom_document_type_get_public_id((dom_document_type *)node, &pub);
++	dom_document_type_get_system_id((dom_document_type *)node, &sys);
++	JS_SetPropertyUint32(ctx, arr, 0, pub != NULL ?
++		JS_NewStringLen(ctx, dom_string_data(pub), dom_string_byte_length(pub)) : JS_NewString(ctx, ""));
++	JS_SetPropertyUint32(ctx, arr, 1, sys != NULL ?
++		JS_NewStringLen(ctx, dom_string_data(sys), dom_string_byte_length(sys)) : JS_NewString(ctx, ""));
++	if (pub != NULL)
++		dom_string_unref(pub);
++	if (sys != NULL)
++		dom_string_unref(sys);
++	return arr;
++}
++
+ /** __ns.resolveURL(url[, base]) -> absolute URL string or null */
+ static JSValue nat_resolve_url(JSContext *ctx, JSValueConst this_val,
+ 		int argc, JSValueConst *argv)
+@@ -1218,6 +1246,7 @@
+ 	JS_CFUNC_DEF("now", 0, nat_now),
+ 	JS_CFUNC_DEF("baseURL", 0, nat_base_url),
+ 	JS_CFUNC_DEF("resolveURL", 2, nat_resolve_url),
++	JS_CFUNC_DEF("doctypeIds", 1, nat_doctype_ids),
+ 	JS_CFUNC_DEF("log", 1, nat_log),
+ };
+ 
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -2774,7 +2774,7 @@
+ global.getComputedStyle = function (el, pseudo) {
+ 	var c = el && el.ownerDocument && el.ownerDocument !== document ? frameComputed(el) : null;
+ 	if (!c)
+-		c = (el && ns.computed(el)) || { display: 'none' };
++		c = (el && ns.computed(el)) || uaComputed(el) || { display: 'none' };
+ 	var props = {};
+ 	Object.keys(c).forEach(function (k) {
+ 		var kebab = k.indexOf('-') >= 0 ? k : camelToKebab(k);
+@@ -3249,16 +3249,19 @@
+ accessor(DocP, 'implementation', function () {
+ 	return { hasFeature: function () { return true; },
+ 		createHTMLDocument: function (t) { return ns.parseDocument('<!DOCTYPE html><html><head><title>' + escapeText(toStr(t)) + '</title></head><body></body></html>'); },
+-		createDocument: function (nsURI, qname) {
++		createDocument: function (nsURI, qname, doctype) {
+ 			var d = ns.parseDocument('');
+ 			while (d.firstChild) d.removeChild(d.firstChild);
+ 			if (qname != null && qname !== '')
+ 				d.appendChild(d.createElementNS(nsURI, qname));
++			/* the doctype object (a script-side node) now belongs to the new document */
++			if (doctype && typeof doctype === 'object') doctype.ownerDocument = d;
+ 			return d;
+ 		},
+ 		createDocumentType: function (n, pub, sys) {
+ 			var p = splitQName(String(n));
+-			return { nodeType: 10, name: String(n), publicId: toStr(pub), systemId: toStr(sys), localName: p.local };
++			return { nodeType: 10, nodeName: String(n), name: String(n), publicId: toStr(pub), systemId: toStr(sys),
++				localName: p.local, ownerDocument: document, parentNode: null };
+ 		} };
+ });
+ 
+@@ -4035,4 +4038,32 @@
+ 	});
+ });
+ 
++/* DocumentType nodes from the parser: name, publicId, systemId */
++['name', 'publicId', 'systemId'].forEach(function (k, i) {
++	if (Object.getOwnPropertyDescriptor(NodeP, k)) return;
++	accessor(NodeP, k, function () {
++		if (this.nodeType !== 10) return undefined;
++		if (k === 'name') return this.nodeName;
++		var ids = ns.doctypeIds ? ns.doctypeIds(this) : null;
++		return ids ? ids[i - 1] : '';
++	});
++});
++/* getComputedStyle display for an element the engine has not laid out yet (just inserted): the user-agent
++ * default for its tag, or the inline style, instead of "none" */
++var uaDisplay = {
++	block: 'ADDRESS ARTICLE ASIDE BLOCKQUOTE BODY CENTER DETAILS DIALOG DD DIR DIV DL DT FIELDSET FIGCAPTION FIGURE FOOTER FORM H1 H2 H3 H4 H5 H6 HEADER HGROUP HR HTML LEGEND MAIN MENU NAV OL P PRE SEARCH SECTION SUMMARY UL OPTGROUP OPTION',
++	none: 'AREA BASE DATALIST HEAD LINK META NOSCRIPT PARAM RP SCRIPT STYLE TEMPLATE TITLE',
++	'list-item': 'LI', table: 'TABLE', 'table-row': 'TR', 'table-cell': 'TD TH', 'table-row-group': 'TBODY',
++	'table-header-group': 'THEAD', 'table-footer-group': 'TFOOT', 'table-caption': 'CAPTION', 'inline-block': 'BUTTON INPUT SELECT TEXTAREA METER PROGRESS', ruby: 'RUBY', 'ruby-text': 'RT'
++};
++var uaDisplayMap = {};
++Object.keys(uaDisplay).forEach(function (d) { uaDisplay[d].split(' ').forEach(function (t) { uaDisplayMap[t] = d; }); });
++function uaComputed(el) {
++	if (!el || el.nodeType !== 1 || !el.isConnected) return null;
++	var d = el.hasAttribute('hidden') ? 'none' : (uaDisplayMap[el.tagName] || 'inline');
++	if (el.tagName === 'DIALOG' && !el.hasAttribute('open')) d = 'none';
++	var s = el.style && el.style.display;
++	return { display: s || d, position: (el.style && el.style.position) || 'static', visibility: 'visible' };
++}
++
+ })(globalThis);
