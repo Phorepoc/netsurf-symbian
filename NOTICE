@@ -25,6 +25,7 @@ Not part of this repository, fetched and built at build time (sources.lock), eac
 - curl 8.10.1: the curl licence (curl.txt)
 - libpng 1.6.44: the libpng licence (libpng-2.0.txt)
 - IJG libjpeg 9f: the IJG licence (libjpeg-IJG.txt)
+- libwebp 1.4.0 (its decoder): BSD-3-Clause with Google's additional patent grant (libwebp-BSD-3.txt)
 - FreeType 2.13.3: the FreeType License (FreeType-FTL.txt), which we use under its terms
 - mbedTLS 3.6 (Apache-2.0 option): the tls repository's, built from its pinned release (mbedTLS-Apache-2.0.txt)
 - the CA bundle (Mozilla's roots as curl publishes them, MPL-2.0 data; MPL-2.0.txt) is the tls repository's

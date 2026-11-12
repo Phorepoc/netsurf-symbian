@@ -4,12 +4,12 @@
 #
 # build_deps.sh [lib ...] -- the C libraries the engine links besides NetSurf's own, each as a static archive for Open C /
 # P.I.P.S. (ARCH=x32 default, or arm), compiled with the pdk's Open C client line (tools/openc_cflags.py):
-#   libcurl 8.10.1 (over the tls repository's mbedTLS), libpng 1.6.44, IJG libjpeg 9f, FreeType 2.13.3, quickjs-ng 0.17.0
+#   libcurl 8.10.1 (over the tls repository's mbedTLS), libpng 1.6.44, IJG libjpeg 9f, libwebp 1.4.0 (decoder), FreeType 2.13.3, quickjs-ng 0.17.0
 # Out: $OUT/lib/*.a and the headers the NetSurf build uses: $OUT/{curl,img,ft,qjs}-include.
 set -eu
 . "$(dirname "${BASH_SOURCE[0]}")/env.sh"
-LIBS=${*:-libcurl libpng libjpeg libfreetype libquickjs}
-bash "$NSS/recipes/fetch_sources.sh" curl libpng libjpeg freetype quickjs >/dev/null
+LIBS=${*:-libcurl libpng libjpeg libwebp libfreetype libquickjs}
+bash "$NSS/recipes/fetch_sources.sh" curl libpng libjpeg libwebp freetype quickjs >/dev/null
 openc_flags
 W=$V/deps
 mkdir -p "$W"
@@ -68,6 +68,16 @@ for lib in $LIBS; do
         base/ftsynth base/ftstroke autofit/autofit cff/cff psaux/psaux psnames/psnames pshinter/pshinter raster/raster \
         sfnt/sfnt smooth/smooth truetype/truetype cache/ftcache gzip/ftgzip | archive_lib libfreetype "$S"
     rm -rf "$OUT/ft-include"; mkdir -p "$OUT/ft-include"; cp -r "$S/include/." "$OUT/ft-include/"
+    ;;
+  libwebp)
+    # the decoder only (src/dec, the decoding dsp/utils; the encoder's files are left out). The SIMD variants compile to
+    # nothing unless the target has them (x32: SSE2/SSE4.1 by the compiler's own macros; the ARMv6 target: none), no threads.
+    S=$W/libwebp; unpack libwebp "$S"
+    write_flags libwebp "${XF[@]}" -O2 -iquote "$S" -I"$S/src"
+    (cd "$S" && ls src/dec/*.c src/dsp/*.c src/utils/*.c) |
+        grep -vE '/(enc|cost|ssim|lossless_enc)[^/]*\.c$|/(bit_writer|huffman_encode|quant_levels)_utils\.c$|/palette\.c$' |
+        archive_lib libwebp "$S"
+    mkdir -p "$OUT/img-include/webp"; cp "$S"/src/webp/decode.h "$S"/src/webp/types.h "$OUT/img-include/webp/"
     ;;
   libquickjs)
     S=$W/quickjs; unpack quickjs "$S"

@@ -28,7 +28,7 @@ NS_LIBSET="libwapcaplet libparserutils libhubbub libcss libdom libnsutils libnsb
 LIBS=${*:-$NS_LIBSET netsurf}
 
 bash "$NSS/recipes/fetch_sources.sh" netsurf >/dev/null || exit 1
-for f in "$OUT/lib/libcurl.a" "$OUT/lib/libpng.a" "$OUT/lib/libjpeg.a" "$OUT/lib/libfreetype.a" "$OUT/lib/libquickjs.a"; do
+for f in "$OUT/lib/libcurl.a" "$OUT/lib/libpng.a" "$OUT/lib/libjpeg.a" "$OUT/lib/libwebp.a" "$OUT/lib/libfreetype.a" "$OUT/lib/libquickjs.a"; do
     [ -f "$f" ] || { echo "no $f -- run recipes/build_deps.sh first"; exit 1; }
 done
 
@@ -73,13 +73,14 @@ for l in $NS_LIBSET; do
 done
 printf 'Name: freetype2\nDescription: FreeType 2.13.3\nVersion: 25.1.19\nCflags: -I%s\nLibs:\n' "$OUT/ft-include" > "$PCDIR/freetype2.pc"
 printf 'Name: libpng\nDescription: libpng\nVersion: 1.6.44\nCflags: -I%s\nLibs:\n' "$OUT/img-include" > "$PCDIR/libpng.pc"
+printf 'Name: libwebp\nDescription: libwebp\nVersion: 1.4.0\nCflags: -I%s\nLibs:\n' "$OUT/img-include" > "$PCDIR/libwebp.pc"
 printf 'Name: libcurl\nDescription: libcurl\nVersion: 8.10.1\nCflags: -I%s -include sys/select.h\nLibs:\n' "$OUT/curl-include" > "$PCDIR/libcurl.pc"
 export PKG_CONFIG_PATH=$PCDIR PKG_CONFIG_LIBDIR=$PCDIR
 
-# The browser: core + framebuffer front end; curl (+ mbedTLS under it), PNG/JPEG, FreeType fonts, the QuickJS-ng handler.
-# Off: OpenSSL (curl uses mbedTLS), Duktape, WebP/JPEG XL, RSVG, RISC OS sprites, video, PDF export, the sanitizer.
+# The browser: core + framebuffer front end; curl (+ mbedTLS under it), PNG/JPEG/WebP, FreeType fonts, the QuickJS-ng handler.
+# Off: OpenSSL (curl uses mbedTLS), Duktape, JPEG XL, RSVG, RISC OS sprites, video, PDF export, the sanitizer.
 NS_BROWSER_ARGS=(TARGET=framebuffer NETSURF_USE_CURL=YES NETSURF_USE_OPENSSL=NO NETSURF_USE_JPEG=YES NETSURF_USE_PNG=YES
-    NETSURF_USE_DUKTAPE=NO NETSURF_USE_WEBP=NO NETSURF_USE_JPEGXL=NO NETSURF_USE_RSVG=NO NETSURF_USE_ROSPRITE=NO
+    NETSURF_USE_DUKTAPE=NO NETSURF_USE_WEBP=YES NETSURF_USE_JPEGXL=NO NETSURF_USE_RSVG=NO NETSURF_USE_ROSPRITE=NO
     NETSURF_USE_VIDEO=NO NETSURF_USE_HARU_PDF=NO NETSURF_USE_LIBICONV_PLUG=NO NETSURF_USE_NSSVG=NO
     NETSURF_FB_FONTLIB=freetype NETSURF_USE_SANITIZER=NO NETSURF_FRAMEBUFFER_RESOURCES=/resource/phenetsurf/
     NETSURF_USE_QUICKJS=YES)

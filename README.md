@@ -44,7 +44,7 @@ all of this on every release (`.github/workflows/release.yml`), and `recipes/sis
 - `patches/` are our changes to the NetSurf tree: platform guards for Symbian's libc, the resource path of the engine, a
   stack size for QuickJS and a fix for `document.title`.
 - `os/data/netsurf/` has the `Choices` files, which name the fonts of the Phorepoc images and the CA bundle.
-- `recipes/` downloads and builds NetSurf and the libraries it needs: curl, libpng, libjpeg, FreeType and QuickJS-ng.
+- `recipes/` downloads and builds NetSurf and the libraries it needs: curl, libpng, libjpeg, libwebp, FreeType and QuickJS-ng.
 - `registry/` has the component entries the pdk builds.
 
 ## License

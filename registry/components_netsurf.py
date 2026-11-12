@@ -5,7 +5,7 @@ r"""components_netsurf -- the netsurf-symbian layer's components (merged into co
 PHOREPOC_ADAPTATIONS=<board adaptations>:<tls>:<webengine>:<netsurf-symbian>, see the pdk's tools/emitter/paths.py).
 
 OS paths are relative to the merged OS tree. NetSurf is not in the tree: build.sh makes prebuilt archives under
-$PHOREPOC_BUILD/thirdparty/{x86,arm}/netsurf/lib/ (NetSurf's core and libraries, curl, libpng, libjpeg, FreeType, QuickJS-ng)
+$PHOREPOC_BUILD/thirdparty/{x86,arm}/netsurf/lib/ (NetSurf's core and libraries, curl, libpng, libjpeg, libwebp, FreeType, QuickJS-ng)
 and the mbedTLS archive of the tls layer is .../thirdparty/{x86,arm}/lib/libmbedtls.a, where the "thirdparty/..." paths
 resolve; the components link them through x32_archives / arm_archives. The run-time resources (NetSurf's Messages and
 style sheets, the Choices file, the CA bundle) are staged under .../netsurf/res/ and installed to \resource\phenetsurf\.
@@ -20,7 +20,7 @@ BUILD = os.environ.get("PHOREPOC_BUILD", "/build")
 _NS_LIBS = ("netsurf", "libwapcaplet", "libparserutils", "libhubbub", "libcss", "libdom", "libnsutils", "libnsbmp", "libnsgif",
             "libutf8proc", "libnsfb", "libnslog", "libnspsl", "libsvgtiny")
 # link order: the browser core first, the libraries it uses behind it
-_LIBS = ("netsurf", "libquickjs", "libcurl", "libmbedtls", "libpng", "libjpeg", "libfreetype", "libcss", "libdom",
+_LIBS = ("netsurf", "libquickjs", "libcurl", "libmbedtls", "libpng", "libjpeg", "libwebp", "libfreetype", "libcss", "libdom",
          "libhubbub", "libparserutils", "libwapcaplet", "libnsutils", "libnsbmp", "libnsgif", "libutf8proc", "libnsfb",
          "libnslog", "libnspsl", "libsvgtiny")
 _RES = ("Messages", "default.css", "internal.css", "quirks.css", "adblock.css", "welcome.html", "credits.html",
