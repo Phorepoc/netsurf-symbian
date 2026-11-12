@@ -1,0 +1,36 @@
+--- a/netsurf/content/handlers/html/imagemap.c
++++ b/netsurf/content/handlers/html/imagemap.c
+@@ -310,6 +310,7 @@
+ 	dom_exception exc;
+ 	dom_string *href = NULL, *target = NULL, *shape = NULL;
+ 	dom_string *coords = NULL;
++	char *cbuf = NULL; /* strtok works on a copy: the attribute's own string is shared with the DOM */
+ 	struct mapentry *new_map, *temp;
+ 	bool ret = true;
+ 
+@@ -394,9 +395,16 @@
+ 		int x, y;
+ 		float *xcoords, *ycoords;
+ 		/* coordinates are a comma-separated list of values */
+-		char *val = strtok((char *)dom_string_data(coords), ",");
++		char *val;
+ 		int num = 1;
+ 
++		cbuf = malloc(dom_string_byte_length(coords) + 1);
++		if (cbuf == NULL)
++			goto bad_out;
++		memcpy(cbuf, dom_string_data(coords), dom_string_byte_length(coords));
++		cbuf[dom_string_byte_length(coords)] = '\0';
++		val = strtok(cbuf, ",");
++
+ 		switch (new_map->type) {
+ 		case IMAGEMAP_RECT:
+ 			/* (left, top, right, bottom) */
+@@ -513,6 +521,7 @@
+ 		free(new_map);
+ 	}
+ ok_out:
++	free(cbuf);
+ 	if (href != NULL)
+ 		dom_string_unref(href);
+ 	if (target != NULL)
