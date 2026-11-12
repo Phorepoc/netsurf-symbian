@@ -71,9 +71,10 @@ for lib in $LIBS; do
     ;;
   libwebp)
     # the decoder only (src/dec, the decoding dsp/utils; the encoder's files are left out). The SIMD variants compile to
-    # nothing unless the target has them (x32: SSE2/SSE4.1 by the compiler's own macros; the ARMv6 target: none), no threads.
+    # nothing: the Open C include path has no compiler intrinsics headers (emmintrin.h), so x32 drops the compiler's
+    # __SSE2__/__SSE4_1__ (libwebp's cpu.h keys WEBP_USE_SSE2/SSE41 on them); the ARMv6 target has none. No threads.
     S=$W/libwebp; unpack libwebp "$S"
-    write_flags libwebp "${XF[@]}" -O2 -iquote "$S" -I"$S/src"
+    write_flags libwebp "${XF[@]}" -U__SSE2__ -U__SSE4_1__ -O2 -iquote "$S" -I"$S/src"
     (cd "$S" && ls src/dec/*.c src/dsp/*.c src/utils/*.c) |
         grep -vE '/(enc|cost|ssim|lossless_enc)[^/]*\.c$|/(bit_writer|huffman_encode|quant_levels)_utils\.c$|/palette\.c$' |
         archive_lib libwebp "$S"
