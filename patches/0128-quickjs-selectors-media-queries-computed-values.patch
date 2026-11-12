@@ -1,0 +1,357 @@
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
+@@ -105,7 +105,7 @@
+ 	if (ds == NULL)
+ 		return JS_NewStringLen(ctx, "", 0);
+ 	return JS_NewStringLen(ctx, dom_string_data(ds),
+-			       dom_string_length(ds));
++			       dom_string_byte_length(ds));
+ }
+ 
+ /* JS value to new dom_string; caller unrefs. NULL on failure */
+@@ -913,7 +913,7 @@
+ 	if (cls == NULL)
+ 		return false;
+ 	data = dom_string_data(cls);
+-	len = dom_string_length(cls);
++	len = dom_string_byte_length(cls);
+ 	tlen = strlen(token);
+ 
+ 	for (i = 0; i + tlen <= len; i++) {
+@@ -940,7 +940,7 @@
+ 		if (dom_node_get_node_name(el, &val) != DOM_NO_ERR ||
+ 		    val == NULL)
+ 			return false;
+-		match = (dom_string_length(val) == strlen(arg)) &&
++		match = (dom_string_byte_length(val) == strlen(arg)) &&
+ 			(strncasecmp(dom_string_data(val), arg,
+ 				     strlen(arg)) == 0);
+ 		dom_string_unref(val);
+@@ -962,7 +962,7 @@
+ 					      &val) != DOM_NO_ERR ||
+ 		    val == NULL)
+ 			return false;
+-		match = (dom_string_length(val) == strlen(arg)) &&
++		match = (dom_string_byte_length(val) == strlen(arg)) &&
+ 			(strncmp(dom_string_data(val), arg,
+ 				 strlen(arg)) == 0);
+ 		dom_string_unref(val);
+@@ -1503,7 +1503,7 @@
+ 	if (dom_node_get_node_name(node, &name) != DOM_NO_ERR ||
+ 	    name == NULL)
+ 		return false;
+-	if (dom_string_length(name) == 5)
++	if (dom_string_byte_length(name) == 5)
+ 		media = (strncasecmp(dom_string_data(name), "AUDIO",
+ 				     5) == 0) ||
+ 			(strncasecmp(dom_string_data(name), "VIDEO",
+@@ -1948,7 +1948,7 @@
+ 			if (dom_node_get_node_name(child, &name) ==
+ 				    DOM_NO_ERR && name != NULL) {
+ 				bool is_head =
+-					(dom_string_length(name) == 4) &&
++					(dom_string_byte_length(name) == 4) &&
+ 					(strncasecmp(dom_string_data(name),
+ 						     "HEAD", 4) == 0);
+ 				dom_string_unref(name);
+@@ -3357,12 +3357,12 @@
+ 		}
+ 
+ 		kdata = dom_string_data(key);
+-		klen = dom_string_length(key);
++		klen = dom_string_byte_length(key);
+ 		if (klen > 2 && kdata[0] == 'o' && kdata[1] == 'n' &&
+ 		    dom_attr_get_value(attr, &val) == DOM_NO_ERR &&
+ 		    val != NULL) {
+ 			/* compile "(function(event){ <attr> })" */
+-			size_t vlen = dom_string_length(val);
++			size_t vlen = dom_string_byte_length(val);
+ 			size_t slen = vlen + klen + 64;
+ 			char *src = malloc(slen);
+ 
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_native.c
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_native.c
+@@ -343,6 +343,13 @@
+ 		nat_set_str(ctx, o, "fontWeight", "400");
+ 		break;
+ 	}
++	switch (css_computed_white_space(s)) {
++	case CSS_WHITE_SPACE_PRE: nat_set_str(ctx, o, "whiteSpace", "pre"); break;
++	case CSS_WHITE_SPACE_NOWRAP: nat_set_str(ctx, o, "whiteSpace", "nowrap"); break;
++	case CSS_WHITE_SPACE_PRE_WRAP: nat_set_str(ctx, o, "whiteSpace", "pre-wrap"); break;
++	case CSS_WHITE_SPACE_PRE_LINE: nat_set_str(ctx, o, "whiteSpace", "pre-line"); break;
++	default: nat_set_str(ctx, o, "whiteSpace", "normal"); break;
++	}
+ 	nat_set_str(ctx, o, "fontStyle",
+ 		    css_computed_font_style(s) == CSS_FONT_STYLE_ITALIC ?
+ 		    "italic" : "normal");
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -122,10 +122,13 @@
+ 	while (this.i < this.s.length && /\s/.test(this.s[this.i])) this.i++;
+ };
+ SelParser.prototype.ident = function () {
+-	var m = /^(?:\\.|[\w\u00a0-\uffff-])+/.exec(this.s.slice(this.i));
++	var m = /^(?:\\[0-9a-fA-F]{1,6}[ \t\n\f]?|\\.|[\w\u00a0-\uffff-])+/.exec(this.s.slice(this.i));
+ 	if (!m) return null;
+ 	this.i += m[0].length;
+-	return m[0].replace(/\\(.)/g, '$1');
++	/* CSS escapes: \hex (1-6 digits, one optional whitespace after) and \char */
++	return m[0].replace(/\\([0-9a-fA-F]{1,6})[ \t\n\f]?|\\(.)/g, function (all, hex, ch) {
++		return hex ? String.fromCodePoint(parseInt(hex, 16) || 0xFFFD) : ch;
++	});
+ };
+ SelParser.prototype.list = function () {
+ 	var list = [];
+@@ -267,15 +270,17 @@
+ 	return pos;
+ }
+ 
++function elParent(e) { var p = e.parentNode; return !!p && p.nodeType === 1; }
+ function compilePseudo(name, arg, isElementPseudo) {
+ 	if (isElementPseudo) {
+ 		/* pseudo-elements never match real elements */
+ 		return function () { return false; };
+ 	}
+ 	switch (name) {
+-	case 'first-child': return function (e) { return siblingIndex(e, false) === 1; };
+-	case 'last-child': return function (e) { return siblingIndex(e, true) === 1; };
+-	case 'only-child': return function (e) { return siblingIndex(e, false) === 1 && siblingIndex(e, true) === 1; };
++	/* a root element (no parent element) is not a first/last/only child (Selectors 3, as Acid3 test 35 expects) */
++	case 'first-child': return function (e) { return elParent(e) && siblingIndex(e, false) === 1; };
++	case 'last-child': return function (e) { return elParent(e) && siblingIndex(e, true) === 1; };
++	case 'only-child': return function (e) { return elParent(e) && siblingIndex(e, false) === 1 && siblingIndex(e, true) === 1; };
+ 	case 'first-of-type': return function (e) { return siblingIndex(e, false, true) === 1; };
+ 	case 'last-of-type': return function (e) { return siblingIndex(e, true, true) === 1; };
+ 	case 'only-of-type': return function (e) { return siblingIndex(e, false, true) === 1 && siblingIndex(e, true, true) === 1; };
+@@ -298,7 +303,9 @@
+ 		return true; };
+ 	case 'root': return function (e) { return e.parentNode && e.parentNode.nodeType === 9; };
+ 	case 'scope': return function (e, scope) { return scope ? e === scope : (e.parentNode && e.parentNode.nodeType === 9); };
+-	case 'checked': return function (e) { return !!(e.checked || (e.tagName === 'OPTION' && e.selected)); };
++	case 'checked': return function (e) {
++		if (e.tagName === 'OPTION') return !!e.selected;
++		return e.tagName === 'INPUT' && (e.type === 'checkbox' || e.type === 'radio') && !!e.checked; };
+ 	case 'disabled': return function (e) { return e.hasAttribute('disabled'); };
+ 	case 'enabled': return function (e) { return /^(INPUT|BUTTON|SELECT|TEXTAREA|OPTION|FIELDSET)$/.test(e.tagName) && !e.hasAttribute('disabled'); };
+ 	case 'required': return function (e) { return e.hasAttribute('required'); };
+@@ -348,7 +355,7 @@
+ 	if (c.tag && c.tag !== '*' && e.tagName.toLowerCase() !== c.tag) return false;
+ 	if (c.id !== null && e.id !== c.id) return false;
+ 	if (c.classes.length) {
+-		var cls = ' ' + (e.getAttribute('class') || '').replace(/\s+/g, ' ') + ' ';
++		var cls = ' ' + (e.getAttribute('class') || '').replace(/[ \t\n\f\r]+/g, ' ') + ' ';
+ 		for (var i = 0; i < c.classes.length; i++)
+ 			if (cls.indexOf(' ' + c.classes[i] + ' ') < 0) return false;
+ 	}
+@@ -700,20 +707,37 @@
+ }, function (v) { if (this.tagName === 'TEXTAREA') this.textContent = v; else this.setAttribute('value', v); });
+ accessor(ElementP, 'checked', function () {
+ 	if (this.tagName !== 'INPUT') return undefined;
+-	return ns.inputChecked ? ns.inputChecked(this) : this.hasAttribute('checked');
++	var nat = ns.inputChecked ? ns.inputChecked(this) : this.hasAttribute('checked');
++	/* dirty checkedness: once script sets checked, the checked attribute no longer changes it; a change made by the
++	 * engine itself (the user clicking the widget) shows up as a native state we did not write, and wins */
++	if (this.__ns_chk !== undefined) {
++		if (nat === this.__ns_chkN) return this.__ns_chk;
++		this.__ns_chk = undefined;
++	}
++	return nat;
+ }, function (v) {
+ 	if (this.tagName !== 'INPUT') return;
+ 	if (v && this.type === 'radio' && this.name) {
+ 		/* checking a radio button unchecks the others of its group: same tree, form owner and name */
+ 		var self = this, form = this.form, name = this.name, root = rgRoot(this);
+ 		qsa(root, 'input').forEach(function (o) {
+-			if (o !== self && o.type === 'radio' && o.name === name && o.form === form && o.checked) {
+-				if (ns.setInputChecked) ns.setInputChecked(o, false); else o.removeAttribute('checked');
+-			}
++			if (o !== self && o.type === 'radio' && o.name === name && o.form === form && o.checked) o.checked = false;
+ 		});
+ 	}
+ 	if (ns.setInputChecked) ns.setInputChecked(this, !!v);
+ 	else if (v) this.setAttribute('checked', ''); else this.removeAttribute('checked');
++	this.__ns_chk = !!v;
++	this.__ns_chkN = ns.inputChecked ? ns.inputChecked(this) : this.hasAttribute('checked');
++});
++['setAttribute', 'removeAttribute'].forEach(function (k) {
++	var orig = ElementP[k];
++	if (typeof orig !== 'function') return;
++	method(ElementP, k, function (name) {
++		var r = orig.apply(this, arguments);
++		if (this.__ns_chk !== undefined && String(name).toLowerCase() === 'checked')
++			this.__ns_chkN = ns.inputChecked ? ns.inputChecked(this) : this.hasAttribute('checked');
++		return r;
++	});
+ });
+ accessor(ElementP, 'defaultChecked', function () { return this.hasAttribute('checked'); },
+ 	function (v) { if (v) this.setAttribute('checked', ''); else this.removeAttribute('checked'); });
+@@ -2602,33 +2626,149 @@
+ 	out.push(text.slice(start));
+ 	return out.map(function (x) { return x.trim(); });
+ }
++/* Media queries (Media Queries 3) for a frame document's sheets. The viewport is the frame element's box, taken from
++ * its inline width/height (the frame is not laid out); an unknown feature or a malformed query is "not all". */
++function frameViewport(doc) {
++	var el = doc.__ns_frameEl, w = 0, h = 0;
++	if (el && el.style) {
++		w = parseFloat(el.style.width) || 0;
++		h = parseFloat(el.style.height) || 0;
++	}
++	return { w: w, h: h };
++}
++function mqLength(v) {
++	var m = /^(-?[\d.]+)\s*(px|em|rem|pt|cm|mm|in)?$/.exec(v);
++	if (!m) return NaN;
++	var n = parseFloat(m[1]);
++	switch (m[2]) {
++	case 'em': case 'rem': return n * 16;
++	case 'pt': return n * 4 / 3;
++	case 'in': return n * 96;
++	case 'cm': return n * 96 / 2.54;
++	case 'mm': return n * 96 / 25.4;
++	case undefined: return n === 0 ? 0 : NaN;
++	default: return n;
++	}
++}
++function mqFeature(expr, vp) {
++	var m = /^\(\s*([a-z-]+)\s*(?::\s*([^()]+?))?\s*\)$/.exec(expr);
++	if (!m) return null;
++	var name = m[1], val = m[2], cmp = 0;
++	if (name.indexOf('min-') === 0) { cmp = 1; name = name.slice(4); }
++	else if (name.indexOf('max-') === 0) { cmp = -1; name = name.slice(4); }
++	var actual, num;
++	var lengths = { width: vp.w, height: vp.h, 'device-width': global.screen.width, 'device-height': global.screen.height };
++	var ints = { color: 8, 'color-index': 0, monochrome: 0, grid: 0 };
++	if (name in lengths) { actual = lengths[name]; if (val !== undefined) num = mqLength(val); }
++	else if (name in ints) { actual = ints[name]; if (val !== undefined) { num = /^\d+$/.test(val) ? parseInt(val, 10) : NaN; } }
++	else if (name === 'orientation') {
++		if (cmp || val === undefined) return cmp ? null : true;
++		if (val !== 'portrait' && val !== 'landscape') return null;
++		return (vp.h >= vp.w ? 'portrait' : 'landscape') === val;
++	} else if (name === 'scan') return val === undefined || val === 'progressive' || val === 'interlace' ? false : null;
++	else return null;
++	if (val === undefined) return cmp ? null : actual !== 0;
++	if (isNaN(num)) return null;
++	return cmp > 0 ? actual >= num : cmp < 0 ? actual <= num : actual === num;
++}
++function mqQuery(q, vp) {
++	q = q.trim().toLowerCase();
++	if (!q) return false;
++	var neg = false, type = 'all', rest = q, m;
++	if (q.charAt(0) !== '(') {
++		m = /^(?:(only|not)\s+)?([a-z][a-z-]*)(?:\s+and\s+([\s\S]*))?$/.exec(q);
++		if (!m || m[2] === 'and' || m[2] === 'not' || m[2] === 'only') return false;
++		neg = m[1] === 'not';
++		type = m[2];
++		rest = m[3];
++		if (rest !== undefined && !rest.trim()) return false;
++	}
++	var ok = type === 'all' || type === 'screen';
++	if (rest !== undefined) {
++		var parts = rest.split(/\s+and\s+/);
++		for (var i = 0; i < parts.length; i++) {
++			var r = mqFeature(parts[i].trim(), vp);
++			if (r === null) return false;
++			if (!r) ok = false;
++		}
++	}
++	return neg ? !ok : ok;
++}
++function mqList(text, vp) {
++	var qs = splitSelectorGroup(text);
++	for (var i = 0; i < qs.length; i++) if (mqQuery(qs[i], vp)) return true;
++	return false;
++}
++/* the block that starts at text[open] === '{' ends at the returned index of its matching '}' */
++function cssBlockEnd(text, open) {
++	var depth = 0;
++	for (var i = open; i < text.length; i++) {
++		var ch = text.charAt(i);
++		if (ch === '{') depth++;
++		else if (ch === '}' && --depth === 0) return i;
++	}
++	return text.length;
++}
++/* style rules of a sheet text as { sel, decls }, entering @media blocks whose query matches */
++function cssRules(text, vp, out) {
++	var i = 0;
++	while (i < text.length) {
++		var open = text.indexOf('{', i);
++		if (open < 0) break;
++		var semi = text.indexOf(';', i);
++		var prelude = text.slice(i, open).trim();
++		if (prelude.charAt(0) === '@' && semi >= 0 && semi < open) { i = semi + 1; continue; }
++		var end = cssBlockEnd(text, open);
++		var body = text.slice(open + 1, end);
++		if (prelude.charAt(0) === '@') {
++			var am = /^@media\s+([\s\S]*)$/i.exec(prelude);
++			if (am && mqList(am[1], vp)) cssRules(body, vp, out);
++		} else out.push({ sel: prelude, decls: body });
++		i = end + 1;
++	}
++	return out;
++}
++/* a declared value the engine would drop as invalid, for the properties read back from frame documents */
++var cssKeywords = {
++	cursor: /^(auto|default|none|context-menu|help|pointer|progress|wait|cell|crosshair|text|vertical-text|alias|copy|move|no-drop|not-allowed|grab|grabbing|e-resize|n-resize|ne-resize|nw-resize|s-resize|se-resize|sw-resize|w-resize|ew-resize|ns-resize|nesw-resize|nwse-resize|col-resize|row-resize|all-scroll|zoom-in|zoom-out|inherit|initial|unset)$/,
++	'text-transform': /^(none|capitalize|uppercase|lowercase|full-width|inherit|initial|unset)$/,
++	'white-space': /^(normal|pre|nowrap|pre-wrap|pre-line|break-spaces|inherit|initial|unset)$/
++};
++function cssValid(prop, val) {
++	var re = cssKeywords[prop];
++	if (!re) return true;
++	if (prop === 'cursor' && /^url\(/i.test(val)) return /,\s*[a-z-]+$/i.test(val) && re.test(val.replace(/^[\s\S]*,\s*/, '').toLowerCase());
++	return re.test(val.toLowerCase());
++}
+ function frameComputed(el) {
+ 	var doc = el.ownerDocument, rules = [], order = 0, out = {};
++	var vp = frameViewport(doc);
+ 	var sheets = doc.getElementsByTagName('style');
+ 	for (var i = 0; i < sheets.length; i++) {
+ 		var text = String(sheets[i].textContent || '').replace(/\/\*[\s\S]*?\*\//g, '');
+-		var re = /([^{}]+)\{([^{}]*)\}/g, m;
+-		while ((m = re.exec(text)) !== null) {
+-			var group = splitSelectorGroup(m[1]), hits = [], bad = false;
++		cssRules(text, vp, []).forEach(function (rule) {
++			var group = splitSelectorGroup(rule.sel), hits = [], bad = false;
+ 			for (var g = 0; g < group.length && !bad; g++) {
+-				try { if (group[g] === '' ) bad = true; else if (el.matches(group[g])) hits.push(cssSpecificity(group[g])); }
++				try { if (group[g] === '') bad = true; else if (el.matches(group[g])) hits.push(cssSpecificity(group[g])); }
+ 				catch (e) { bad = true; }
+ 			}
+ 			if (bad || !hits.length)
+-				continue;
+-			rules.push({ spec: Math.max.apply(null, hits), order: order++, decls: m[2] });
+-		}
++				return;
++			rules.push({ spec: Math.max.apply(null, hits), order: order++, decls: rule.decls });
++		});
+ 	}
+ 	rules.sort(function (x, y) { return x.spec - y.spec || x.order - y.order; });
+ 	rules.forEach(function (r) {
+ 		r.decls.split(';').forEach(function (d) {
+ 			var k = d.indexOf(':');
+-			if (k > 0)
+-				out[d.slice(0, k).trim().toLowerCase()] = d.slice(k + 1).trim();
++			if (k <= 0) return;
++			var prop = d.slice(0, k).trim().toLowerCase(), val = d.slice(k + 1).trim();
++			if (cssValid(prop, val))
++				out[prop] = val;
+ 		});
+ 	});
+-	if (!('z-index' in out))
+-		out['z-index'] = 'auto';
++	var initial = { 'z-index': 'auto', cursor: 'auto', 'text-transform': 'none', 'white-space': 'normal' };
++	Object.keys(initial).forEach(function (k) { if (!(k in out)) out[k] = initial[k]; });
+ 	return out;
+ }
+ global.getComputedStyle = function (el, pseudo) {
+@@ -3041,6 +3181,7 @@
+ 	if (!d) {
+ 		d = ns.parseDocument('<!DOCTYPE html><html><head><title></title></head><body></body></html>');
+ 		frameDocs.set(el, d);
++		try { def(d, '__ns_frameEl', { value: el }); } catch (e) {}
+ 	}
+ 	return d;
+ }
