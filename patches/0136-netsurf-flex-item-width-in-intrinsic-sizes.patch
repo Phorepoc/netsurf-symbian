@@ -1,0 +1,31 @@
+--- a/netsurf/content/handlers/html/layout.c
++++ b/netsurf/content/handlers/html/layout.c
+@@ -1083,8 +1083,12 @@
+ 		assert(0);
+ 	}
+ 
+-	/* fixed width takes priority */
+-	if (block->type != BOX_TABLE_CELL && !lh__box_is_flex_item(block)) {
++	/* fixed width takes priority. Flex items too: their width and
++	 * min-width are part of their contribution to the container's
++	 * min-/max-content size (CSS Flexbox 9.9.3), so an icon
++	 * (width:20px) or a button (min-width:44px) inside a flex item gives
++	 * that item its size instead of 0. */
++	if (block->type != BOX_TABLE_CELL) {
+ 		bool border_box = bs == CSS_BOX_SIZING_BORDER_BOX;
+ 		enum css_max_width_e max_type;
+ 		enum css_min_width_e min_type;
+@@ -1108,6 +1112,13 @@
+ 				min = val;
+ 				using_min_border_box = border_box;
+ 			}
++			/* min-width also floors the max-content size: a
++			 * min-width:44px button around a 20px icon is 44px
++			 * wide, not clamped back to 20 below */
++			if (max < val) {
++				max = val;
++				using_max_border_box = border_box;
++			}
+ 		}
+ 
+ 		max_type = css_computed_max_width(block->style, &value, &unit);
