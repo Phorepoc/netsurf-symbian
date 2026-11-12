@@ -1,0 +1,221 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -3012,7 +3012,217 @@
+ 	return d;
+ }
+ accessor(ElementP, 'contentDocument', function () { return frameDocument(this); });
+-method(DocP, 'createElementNS', function (nsURI, qname) { return this.createElement(String(qname).replace(/^.*:/, '')); });
++/* Names and namespaces (DOM Core): createElement rejects names that are not XML Names (InvalidCharacterError);
++ * createElementNS validates the qualified name against the namespace (NamespaceError) and remembers the prefix,
++ * local name and namespace so tagName / localName / prefix / namespaceURI report them. The element itself is still
++ * created by local name in the engine's (HTML) DOM. */
++var XML_NS = 'http://www.w3.org/XML/1998/namespace', XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
++var HTML_NS = 'http://www.w3.org/1999/xhtml';
++var nameRe = /^[A-Za-z_:À-￿][A-Za-z0-9_:.\-·À-￿]*$/;
++function checkName(n) {
++	if (!nameRe.test(n))
++		throw DOMException("'" + n + "' is not a valid name", 'InvalidCharacterError');
++}
++function splitQName(q) {
++	checkName(q);
++	var parts = q.split(':');
++	if (parts.length > 2 || (parts.length === 2 && (parts[0] === '' || parts[1] === '')) || /^[0-9.\-]/.test(parts[parts.length - 1]))
++		throw DOMException("'" + q + "' is not a valid qualified name", 'NamespaceError');
++	return parts.length === 2 ? { prefix: parts[0], local: parts[1] } : { prefix: null, local: q };
++}
++var nsInfo = new WeakMap();
++function protoDesc(o, k) {
++	for (; o; o = Object.getPrototypeOf(o)) {
++		var d = Object.getOwnPropertyDescriptor(o, k);
++		if (d) return d;
++	}
++	return null;
++}
++var baseTagName = protoDesc(ElementP, 'tagName'), baseNodeName = protoDesc(ElementP, 'nodeName');
++var baseCreateElement = DocP.createElement;
++method(DocP, 'createElement', function (n) {
++	n = String(n);
++	checkName(n);
++	return baseCreateElement.call(this, n);
++});
++method(DocP, 'createElementNS', function (nsURI, qname) {
++	var q = String(qname), ns = nsURI == null || nsURI === '' ? null : String(nsURI);
++	var p = splitQName(q);
++	if ((p.prefix !== null && ns === null) ||
++		(p.prefix === 'xml' && ns !== XML_NS) ||
++		((p.prefix === 'xmlns' || q === 'xmlns') !== (ns === XMLNS_NS)))
++		throw DOMException("namespace mismatch for '" + q + "'", 'NamespaceError');
++	var el = baseCreateElement.call(this, p.local);
++	if (ns !== HTML_NS || p.prefix !== null)
++		nsInfo.set(el, { tag: q, prefix: p.prefix, local: p.local, ns: ns });
++	return el;
++});
++function tagGetter(base) {
++	return function () {
++		var i = nsInfo.get(this);
++		return i ? i.tag : (base && base.get ? base.get.call(this) : undefined);
++	};
++}
++accessor(ElementP, 'tagName', tagGetter(baseTagName));
++if (baseNodeName && baseNodeName.get)
++	accessor(ElementP, 'nodeName', tagGetter(baseNodeName));
++accessor(ElementP, 'localName', function () { var i = nsInfo.get(this); return i ? i.local : this.tagName.toLowerCase(); });
++accessor(ElementP, 'namespaceURI', function () { var i = nsInfo.get(this); return i ? i.ns : HTML_NS; });
++accessor(ElementP, 'prefix', function () { var i = nsInfo.get(this); return i ? i.prefix : null; });
++
++/* DOMImplementation: createDocument(ns, null) is an empty document (no element children; the caller appends its
++ * own root); createDocumentType validates its qualified name. */
++accessor(DocP, 'implementation', function () {
++	return { hasFeature: function () { return true; },
++		createHTMLDocument: function (t) { return ns.parseDocument('<!DOCTYPE html><html><head><title>' + escapeText(toStr(t)) + '</title></head><body></body></html>'); },
++		createDocument: function (nsURI, qname) {
++			var d = ns.parseDocument('');
++			while (d.firstChild) d.removeChild(d.firstChild);
++			if (qname != null && qname !== '')
++				d.appendChild(d.createElementNS(nsURI, qname));
++			return d;
++		},
++		createDocumentType: function (n, pub, sys) {
++			var p = splitQName(String(n));
++			return { nodeType: 10, name: String(n), publicId: toStr(pub), systemId: toStr(sys), localName: p.local };
++		} };
++});
++
++/* Tables (HTMLTableElement / HTMLTableSectionElement / HTMLTableRowElement): tBodies, tHead, tFoot, caption, rows,
++ * cells, rowIndex, sectionRowIndex, insertRow / deleteRow / insertCell, create* / delete*. */
++function kids(el, tags) {
++	var out = [];
++	for (var c = el.firstChild; c; c = c.nextSibling)
++		if (c.nodeType === 1 && tags.indexOf(c.tagName) >= 0) out.push(c);
++	return out;
++}
++function tableRows(t) {
++	var out = [];
++	kids(t, ['THEAD']).slice(0, 1).forEach(function (s) { out = out.concat(kids(s, ['TR'])); });
++	for (var c = t.firstChild; c; c = c.nextSibling) {
++		if (c.nodeType !== 1) continue;
++		if (c.tagName === 'TR') out.push(c);
++		else if (c.tagName === 'TBODY') out = out.concat(kids(c, ['TR']));
++	}
++	kids(t, ['TFOOT']).slice(0, 1).forEach(function (s) { out = out.concat(kids(s, ['TR'])); });
++	return out;
++}
++function tagAccessor(name, tags, get, set) {
++	var prev = protoDesc(ElementP, name);
++	accessor(ElementP, name, function () {
++		if (tags.indexOf(this.tagName) >= 0) return get.call(this);
++		return prev && prev.get ? prev.get.call(this) : undefined;
++	}, function (v) {
++		if (tags.indexOf(this.tagName) >= 0) { if (set) set.call(this, v); }
++		else if (prev && prev.set) prev.set.call(this, v);
++	});
++}
++function tagMethod(name, tags, fn) {
++	var prev = protoDesc(ElementP, name);
++	method(ElementP, name, function () {
++		if (tags.indexOf(this.tagName) >= 0) return fn.apply(this, arguments);
++		if (prev && typeof prev.value === 'function') return prev.value.apply(this, arguments);
++		throw new TypeError(name + ' is not a function');
++	});
++}
++var SECTIONS = ['TBODY', 'THEAD', 'TFOOT'];
++tagAccessor('tBodies', ['TABLE'], function () { return NodeList(kids(this, ['TBODY'])); });
++tagAccessor('tHead', ['TABLE'], function () { return kids(this, ['THEAD'])[0] || null; });
++tagAccessor('tFoot', ['TABLE'], function () { return kids(this, ['TFOOT'])[0] || null; });
++tagAccessor('caption', ['TABLE'], function () { return kids(this, ['CAPTION'])[0] || null; });
++tagAccessor('rows', ['TABLE'].concat(SECTIONS), function () {
++	return NodeList(this.tagName === 'TABLE' ? tableRows(this) : kids(this, ['TR']));
++});
++tagAccessor('cells', ['TR'], function () { return NodeList(kids(this, ['TD', 'TH'])); });
++tagAccessor('rowIndex', ['TR'], function () {
++	var p = this.parentNode, t = p && SECTIONS.indexOf(p.tagName) >= 0 ? p.parentNode : p;
++	return t && t.tagName === 'TABLE' ? tableRows(t).indexOf(this) : -1;
++});
++tagAccessor('sectionRowIndex', ['TR'], function () {
++	var p = this.parentNode;
++	return p ? kids(p, ['TR']).indexOf(this) : -1;
++});
++function createIn(t, tag, before) {
++	var e = t.ownerDocument.createElement(tag);
++	t.insertBefore(e, before || null);
++	return e;
++}
++tagMethod('createTHead', ['TABLE'], function () {
++	return this.tHead || createIn(this, 'thead', kids(this, ['CAPTION', 'COLGROUP']).length ? null : this.firstChild);
++});
++tagMethod('createTFoot', ['TABLE'], function () { return this.tFoot || createIn(this, 'tfoot', null); });
++tagMethod('createCaption', ['TABLE'], function () { return this.caption || createIn(this, 'caption', this.firstChild); });
++tagMethod('createTBody', ['TABLE'], function () {
++	var b = kids(this, ['TBODY']);
++	return createIn(this, 'tbody', b.length ? b[b.length - 1].nextSibling : null);
++});
++tagMethod('deleteTHead', ['TABLE'], function () { if (this.tHead) this.removeChild(this.tHead); });
++tagMethod('deleteTFoot', ['TABLE'], function () { if (this.tFoot) this.removeChild(this.tFoot); });
++tagMethod('deleteCaption', ['TABLE'], function () { if (this.caption) this.removeChild(this.caption); });
++tagMethod('insertRow', ['TABLE'].concat(SECTIONS), function (i) {
++	i = i === undefined ? -1 : i | 0;
++	var rows = this.rows, tr = this.ownerDocument.createElement('tr');
++	if (i < -1 || i > rows.length)
++		throw DOMException('row index out of range', 'IndexSizeError');
++	if (this.tagName !== 'TABLE') {
++		this.insertBefore(tr, i === -1 || i === rows.length ? null : rows[i]);
++		return tr;
++	}
++	if (rows.length === 0 || i === -1 || i === rows.length) {
++		var b = kids(this, ['TBODY']);
++		if (rows.length === 0 && !b.length) { b = [createIn(this, 'tbody', null)]; }
++		if (b.length) b[b.length - 1].appendChild(tr);
++		else rows[rows.length - 1].parentNode.appendChild(tr);
++		return tr;
++	}
++	rows[i].parentNode.insertBefore(tr, rows[i]);
++	return tr;
++});
++tagMethod('deleteRow', ['TABLE'].concat(SECTIONS), function (i) {
++	var rows = this.rows;
++	if (i === -1) i = rows.length - 1;
++	if (i < 0 || i >= rows.length) throw DOMException('row index out of range', 'IndexSizeError');
++	rows[i].parentNode.removeChild(rows[i]);
++});
++tagMethod('insertCell', ['TR'], function (i) {
++	i = i === undefined ? -1 : i | 0;
++	var cells = this.cells, td = this.ownerDocument.createElement('td');
++	if (i < -1 || i > cells.length) throw DOMException('cell index out of range', 'IndexSizeError');
++	this.insertBefore(td, i === -1 || i === cells.length ? null : cells[i]);
++	return td;
++});
++tagMethod('deleteCell', ['TR'], function (i) {
++	var cells = this.cells;
++	if (i === -1) i = cells.length - 1;
++	if (i < 0 || i >= cells.length) throw DOMException('cell index out of range', 'IndexSizeError');
++	this.removeChild(cells[i]);
++});
++
++/* HTMLSelectElement.add(option, before): before = an element, an index into options, or null (append). */
++tagMethod('add', ['SELECT', 'DATALIST'], function (o, before) {
++	var ref = typeof before === 'number' ? this.options[before] || null : before || null;
++	(ref ? ref.parentNode : this).insertBefore(o, ref);
++});
++
++/* UIEvent/MouseEvent initialisers on createEvent()'s events (detail, view, and the mouse fields as own data). */
++var baseCreateEvent = DocP.createEvent;
++method(DocP, 'createEvent', function (kind) {
++	var ev = baseCreateEvent.apply(this, arguments);
++	if (ev && typeof ev.initUIEvent !== 'function') {
++		def(ev, 'initUIEvent', { value: function (type, bubbles, cancelable, view, detail) {
++			this.initEvent(type, bubbles, cancelable);
++			def(this, 'view', { value: view === undefined ? null : view, writable: false });
++			def(this, 'detail', { value: detail | 0, writable: false });
++		} });
++		def(ev, 'initMouseEvent', { value: function (type, b, c, view, detail, sx, sy, cx, cy, ctrl, alt, shift, meta, button, related) {
++			this.initUIEvent(type, b, c, view, detail);
++			var f = { screenX: sx | 0, screenY: sy | 0, clientX: cx | 0, clientY: cy | 0, ctrlKey: !!ctrl, altKey: !!alt,
++				shiftKey: !!shift, metaKey: !!meta, button: button | 0, relatedTarget: related || null };
++			for (var k in f) def(this, k, { value: f[k], writable: false });
++		} });
++	}
++	return ev;
++});
+ method(DocP, 'importNode', function (n, deep) { return n.cloneNode(!!deep); });
+ method(DocP, 'adoptNode', function (n) { if (n.parentNode) n.parentNode.removeChild(n); return n; });
+ method(DocP, 'elementFromPoint', function () { return null; });
