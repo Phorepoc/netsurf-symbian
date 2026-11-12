@@ -1,0 +1,206 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -4048,6 +4048,203 @@
+ 		return ids ? ids[i - 1] : '';
+ 	});
+ });
++/* Typed <input> values (HTML "value sanitization algorithm"), valueAsNumber / valueAsDate, stepUp / stepDown,
++ * constraint validation per type (typeMismatch, badInput, range/step/length/pattern), indeterminate, files. */
++var inDateRe = {
++	date: /^(\d{4,})-(\d\d)-(\d\d)$/, month: /^(\d{4,})-(\d\d)$/, week: /^(\d{4,})-W(\d\d)$/,
++	time: /^(\d\d):(\d\d)(?::(\d\d)(?:\.(\d{1,3}))?)?$/, 'datetime-local': /^(\d{4,})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)(?::(\d\d)(?:\.(\d{1,3}))?)?$/
++};
++function inDaysIn(y, m) { return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
++function inWeeksIn(y) {
++	var d = new Date(Date.UTC(y, 0, 1)).getUTCDay();
++	var leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
++	return d === 4 || (leap && d === 3) ? 53 : 52;
++}
++/* parse a typed value to a number (ms for dates/times, months for month), or NaN */
++function inParse(type, v) {
++	var m, re = inDateRe[type];
++	if (type === 'number' || type === 'range') {
++		return /^-?(\d+|\d*\.\d+)([eE][+-]?\d+)?$/.test(v) ? parseFloat(v) : NaN;
++	}
++	if (!re || !(m = re.exec(v))) return NaN;
++	var n = m.slice(1).map(function (x) { return x === undefined ? 0 : parseInt(x, 10); });
++	switch (type) {
++	case 'date':
++		if (n[1] < 1 || n[1] > 12 || n[2] < 1 || n[2] > inDaysIn(n[0], n[1])) return NaN;
++		return Date.UTC(n[0], n[1] - 1, n[2]);
++	case 'month':
++		if (n[1] < 1 || n[1] > 12) return NaN;
++		return (n[0] - 1970) * 12 + n[1] - 1;
++	case 'week':
++		if (n[1] < 1 || n[1] > inWeeksIn(n[0])) return NaN;
++		var jan4 = new Date(Date.UTC(n[0], 0, 4)), dow = (jan4.getUTCDay() + 6) % 7;
++		return Date.UTC(n[0], 0, 4 - dow) + (n[1] - 1) * 604800000;
++	case 'time':
++		if (n[0] > 23 || n[1] > 59 || n[2] > 59) return NaN;
++		return ((n[0] * 60 + n[1]) * 60 + n[2]) * 1000 + (m[4] ? parseInt((m[4] + '00').slice(0, 3), 10) : 0);
++	case 'datetime-local':
++		if (n[1] < 1 || n[1] > 12 || n[2] < 1 || n[2] > inDaysIn(n[0], n[1]) || n[3] > 23 || n[4] > 59 || n[5] > 59) return NaN;
++		return Date.UTC(n[0], n[1] - 1, n[2], n[3], n[4], n[5], m[7] ? parseInt((m[7] + '00').slice(0, 3), 10) : 0);
++	}
++	return NaN;
++}
++function inPad(n, w) { n = String(n); while (n.length < w) n = '0' + n; return n; }
++function inFormat(type, x) {
++	if (type === 'number' || type === 'range') return String(x);
++	if (type === 'month') { var y = Math.floor(x / 12) + 1970; return inPad(y, 4) + '-' + inPad(x - (y - 1970) * 12 + 1, 2); }
++	var d = new Date(x);
++	if (isNaN(d.getTime())) return '';
++	var ymd = inPad(d.getUTCFullYear(), 4) + '-' + inPad(d.getUTCMonth() + 1, 2) + '-' + inPad(d.getUTCDate(), 2);
++	var ms = d.getUTCMilliseconds(), sec = d.getUTCSeconds();
++	var hm = inPad(d.getUTCHours(), 2) + ':' + inPad(d.getUTCMinutes(), 2) + (sec || ms ? ':' + inPad(sec, 2) + (ms ? '.' + inPad(ms, 3) : '') : '');
++	if (type === 'date') return ymd;
++	if (type === 'time') return hm;
++	if (type === 'datetime-local') return ymd + 'T' + hm;
++	if (type === 'week') {
++		var t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 3 - (d.getUTCDay() + 6) % 7));
++		var wy = t.getUTCFullYear(), w1 = new Date(Date.UTC(wy, 0, 4));
++		var wk = 1 + Math.round(((t - w1) / 86400000 - 3 + (w1.getUTCDay() + 6) % 7) / 7);
++		return inPad(wy, 4) + '-W' + inPad(wk, 2);
++	}
++	return '';
++}
++var inStepBase = { number: 1, range: 1, date: 86400000, month: 1, week: 604800000, time: 60000, 'datetime-local': 60000 };
++var inStepScale = { date: 86400000, week: 604800000, time: 1000, 'datetime-local': 1000 };
++function inStep(el, type) {
++	var s = el.getAttribute('step');
++	if (s !== null && s.toLowerCase() === 'any') return null;
++	var v = parseFloat(s);
++	if (!(v > 0)) return inStepBase[type];
++	return v * (inStepScale[type] || 1);
++}
++function inLimit(el, type, attr) {
++	var a = el.getAttribute(attr);
++	var v = a === null ? NaN : inParse(type, a);
++	if (isNaN(v) && type === 'range') return attr === 'min' ? 0 : 100;
++	return v;
++}
++function inSanitize(el, type, v) {
++	switch (type) {
++	case 'text': case 'search': case 'tel': case 'password': return v.replace(/[\r\n]/g, '');
++	case 'url': return v.replace(/[\r\n]/g, '').trim();
++	case 'email': return el.hasAttribute('multiple') ? v.split(',').map(function (x) { return x.trim(); }).join(',') : v.replace(/[\r\n]/g, '').trim();
++	case 'color': return /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : '#000000';
++	case 'range':
++		var min = inLimit(el, type, 'min'), max = inLimit(el, type, 'max'), x = inParse(type, v);
++		if (max < min) max = min;
++		if (isNaN(x)) x = max < min ? min : min + (max - min) / 2;
++		x = Math.min(max, Math.max(min, x));
++		var st = inStep(el, type);
++		if (st) x = Math.min(max, min + Math.round((x - min) / st) * st);
++		return String(x);
++	case 'number': case 'date': case 'month': case 'week': case 'time': case 'datetime-local':
++		return isNaN(inParse(type, v)) ? '' : v;
++	}
++	return v;
++}
++var inTyped = /^(text|search|tel|url|email|password|color|range|number|date|month|week|time|datetime-local)$/;
++(function () {
++	var vd = Object.getOwnPropertyDescriptor(ElementP, 'value');
++	if (!vd) return;
++	accessor(ElementP, 'value', function () {
++		var v = vd.get.call(this);
++		if (this.tagName !== 'INPUT') return v;
++		var t = this.type;
++		return inTyped.test(t) ? inSanitize(this, t, toStr(v)) : v;
++	}, function (v) { vd.set.call(this, v); });
++})();
++function inNumericType(el) { return el.tagName === 'INPUT' && inStepBase[el.type] !== undefined; }
++accessor(ElementP, 'valueAsNumber', function () {
++	if (!inNumericType(this)) return this.tagName === 'INPUT' ? NaN : undefined;
++	return inParse(this.type, this.value);
++}, function (n) {
++	if (!inNumericType(this)) throw new DOMException('valueAsNumber does not apply', 'InvalidStateError');
++	n = Number(n);
++	this.value = isFinite(n) ? inFormat(this.type, n) : '';
++});
++accessor(ElementP, 'valueAsDate', function () {
++	if (this.tagName !== 'INPUT' || !/^(date|month|week|time)$/.test(this.type)) return this.tagName === 'INPUT' ? null : undefined;
++	var x = inParse(this.type, this.value);
++	if (isNaN(x)) return null;
++	if (this.type === 'month') return new Date(Date.UTC(Math.floor(x / 12) + 1970, x % 12, 1));
++	return new Date(x);
++}, function (d) {
++	if (this.tagName !== 'INPUT' || !/^(date|month|week|time)$/.test(this.type)) throw new DOMException('valueAsDate does not apply', 'InvalidStateError');
++	if (d === null) { this.value = ''; return; }
++	if (!(d instanceof Date)) throw new TypeError('not a Date');
++	var t = d.getTime();
++	if (this.type === 'month') t = (d.getUTCFullYear() - 1970) * 12 + d.getUTCMonth();
++	this.value = isNaN(t) ? '' : inFormat(this.type, t);
++});
++function inStepBy(el, n) {
++	if (!inNumericType(el)) throw new DOMException('stepUp/stepDown does not apply', 'InvalidStateError');
++	var t = el.type, st = inStep(el, t);
++	if (st === null) throw new DOMException('step is any', 'InvalidStateError');
++	var min = inLimit(el, t, 'min'), max = inLimit(el, t, 'max');
++	var x = inParse(t, el.value);
++	if (isNaN(x)) x = 0;
++	var base = isNaN(min) ? 0 : min;
++	x = base + Math.round((x - base) / st) * st + (n === undefined ? 1 : Number(n)) * st;
++	if (!isNaN(min) && x < min) x = min;
++	if (!isNaN(max) && x > max) x = max;
++	el.value = inFormat(t, x);
++}
++method(ElementP, 'stepUp', function (n) { inStepBy(this, n === undefined ? 1 : n); });
++method(ElementP, 'stepDown', function (n) { inStepBy(this, -(n === undefined ? 1 : n)); });
++accessor(ElementP, 'indeterminate', function () { return this.tagName === 'INPUT' ? !!this.__ns_indet : undefined; },
++	function (v) { this.__ns_indet = !!v; });
++/* FileList: pages test `input.files instanceof FileList`, so the constructor must exist once files does */
++if (typeof global.FileList !== 'function') {
++	global.FileList = function FileList() { throw new TypeError('Illegal constructor'); };
++	method(global.FileList.prototype, 'item', function (i) { return this[i] || null; });
++}
++accessor(ElementP, 'files', function () {
++	if (this.tagName !== 'INPUT' || this.type !== 'file') return this.tagName === 'INPUT' ? null : undefined;
++	var fl = this.__ns_files || (this.__ns_files = Object.create(global.FileList.prototype, { length: { value: 0 } }));
++	return fl;
++});
++(function () {
++	var old = Object.getOwnPropertyDescriptor(ElementP, 'validity');
++	accessor(ElementP, 'validity', function () {
++		var base = old ? old.get.call(this) : { valid: true };
++		if (this.tagName !== 'INPUT' && this.tagName !== 'TEXTAREA') return base;
++		var el = this, t = el.tagName === 'TEXTAREA' ? 'textarea' : el.type, raw = toStr(vdRaw(el)), v = el.value;
++		var f = { valueMissing: base.valueMissing, typeMismatch: false, patternMismatch: false, tooLong: false, tooShort: false,
++			rangeUnderflow: false, rangeOverflow: false, stepMismatch: false, badInput: false, customError: base.customError };
++		if (v !== '') {
++			if (t === 'email') f.typeMismatch = !(el.hasAttribute('multiple') ? v.split(',') : [v]).every(function (x) {
++				return /^[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(x); });
++			if (t === 'url') { try { new URL(v); } catch (e) { f.typeMismatch = true; } }
++			var pat = el.getAttribute('pattern');
++			if (pat !== null && /^(text|search|tel|url|email|password)$/.test(t)) {
++				try { f.patternMismatch = !new RegExp('^(?:' + pat + ')$').test(v); } catch (e) {}
++			}
++			var maxl = parseInt(el.getAttribute('maxlength'), 10), minl = parseInt(el.getAttribute('minlength'), 10);
++			if (el.__ns_val !== undefined || el.__ns_dirty) {
++				if (maxl >= 0 && v.length > maxl) f.tooLong = true;
++				if (minl >= 0 && v.length < minl) f.tooShort = true;
++			}
++			if (inStepBase[t] !== undefined) {
++				var x = inParse(t, v), min = inLimit(el, t, 'min'), max = inLimit(el, t, 'max'), st = inStep(el, t);
++				if (!isNaN(x)) {
++					if (x < min) f.rangeUnderflow = true;
++					if (x > max) f.rangeOverflow = true;
++					var base0 = isNaN(min) ? 0 : min;
++					if (st && Math.abs(((x - base0) / st) - Math.round((x - base0) / st)) > 1e-9) f.stepMismatch = true;
++				}
++			}
++		} else if (raw !== '' && /^(number|date|month|week|time|datetime-local)$/.test(t)) f.badInput = true;
++		var ok = true;
++		Object.keys(f).forEach(function (k) { if (f[k]) ok = false; });
++		f.valid = ok;
++		return f;
++	});
++	function vdRaw(el) {
++		var vd = Object.getOwnPropertyDescriptor(ElementP, 'value');
++		return el.__ns_val !== undefined ? el.__ns_val : (ns.inputValue ? ns.inputValue(el) : el.getAttribute('value'));
++	}
++})();
++
+ /* getComputedStyle display for an element the engine has not laid out yet (just inserted): the user-agent
+  * default for its tag, or the inline style, instead of "none" */
+ var uaDisplay = {
