@@ -1,0 +1,46 @@
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
+@@ -3428,10 +3428,23 @@
+ {
+ 	char key[32];
+ 	JSAtom atom;
++	JSValue obj;
++	bool keep = false;
+ 
+ 	if (t->closed)
+ 		return;
+ 	qjs_ptr_key(key, sizeof(key), evt);
++	/* a script-created event (createEvent; runtime.js marks the newest few with __ns_keep) keeps its wrapper, so a
++	 * script that dispatches it again sees the same object, with what its init*Event() set (Acid3 test 30) */
++	obj = JS_GetPropertyStr(t->ctx, t->event_map, key);
++	if (JS_IsObject(obj)) {
++		JSValue k = JS_GetPropertyStr(t->ctx, obj, "__ns_keep");
++		keep = JS_ToBool(t->ctx, k) > 0;
++		JS_FreeValue(t->ctx, k);
++	}
++	JS_FreeValue(t->ctx, obj);
++	if (keep)
++		return;
+ 	atom = JS_NewAtom(t->ctx, key);
+ 	JS_DeleteProperty(t->ctx, t->event_map, atom, 0);
+ 	JS_FreeAtom(t->ctx, atom);
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -3206,8 +3206,17 @@
+ 
+ /* UIEvent/MouseEvent initialisers on createEvent()'s events (detail, view, and the mouse fields as own data). */
+ var baseCreateEvent = DocP.createEvent;
++/* the newest script-created events keep their wrapper across dispatches (qjs_dom_event_cleanup skips __ns_keep);
++ * bounded, so a page that creates events without end does not keep them all */
++var keptEvents = [];
+ method(DocP, 'createEvent', function (kind) {
+ 	var ev = baseCreateEvent.apply(this, arguments);
++	if (ev) {
++		def(ev, '__ns_keep', { value: true, writable: true, enumerable: false });
++		keptEvents.push(ev);
++		if (keptEvents.length > 64)
++			keptEvents.shift().__ns_keep = false;
++	}
+ 	if (ev && typeof ev.initUIEvent !== 'function') {
+ 		def(ev, 'initUIEvent', { value: function (type, bubbles, cancelable, view, detail) {
+ 			this.initEvent(type, bubbles, cancelable);
