@@ -1,0 +1,16 @@
+--- a/libhubbub/src/treebuilder/in_row.c
++++ b/libhubbub/src/treebuilder/in_row.c
+@@ -145,6 +145,13 @@
+ 			(void) act_as_if_end_tag_tr(treebuilder);
+ 		} else if (type == TABLE) {
+ 			err = act_as_if_end_tag_tr(treebuilder);
++		} else if (type == TBODY || type == TFOOT || type == THEAD) {
++			/* HTML "in row": if the section is in table scope, act
++			 * as if </tr> was seen and reprocess; else ignore it.
++			 * (Passing it to "in table" ignored it and left the
++			 * <tr> open, so later table text went into the row.) */
++			if (element_in_scope(treebuilder, type, true))
++				err = act_as_if_end_tag_tr(treebuilder);
+ 		} else if (type == BODY || type == CAPTION || type == COL ||
+ 				type == COLGROUP || type == HTML ||
+ 				type == TD || type == TH) {
