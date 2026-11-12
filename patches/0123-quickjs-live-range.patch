@@ -1,0 +1,341 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -3242,27 +3242,319 @@
+ 	var p = Promise.resolve().then(function () { if (cb) return cb(); });
+ 	return { finished: p, ready: p, updateCallbackDone: p, skipTransition: function () {} };
+ });
+-function makeRange(doc) {
+-	var r = {
+-		startContainer: doc, startOffset: 0, endContainer: doc, endOffset: 0, collapsed: true,
+-		commonAncestorContainer: doc,
+-		setStart: function (n, o) { this.startContainer = n; this.startOffset = o; },
+-		setEnd: function (n, o) { this.endContainer = n; this.endOffset = o; },
+-		setStartBefore: function () {}, setStartAfter: function () {}, setEndBefore: function () {}, setEndAfter: function () {},
+-		selectNode: function (n) { this.startContainer = this.endContainer = n; },
+-		selectNodeContents: function (n) { this.startContainer = this.endContainer = n; },
+-		collapse: function () {}, detach: function () {}, cloneRange: function () { return makeRange(doc); },
+-		deleteContents: function () {}, extractContents: function () { return doc.createDocumentFragment(); },
+-		cloneContents: function () { return doc.createDocumentFragment(); },
+-		insertNode: function (n) { if (this.startContainer && this.startContainer.nodeType === 1) this.startContainer.insertBefore(n, this.startContainer.firstChild); },
+-		surroundContents: function () {},
+-		createContextualFragment: function (html) { return fragmentFromHTML(doc.body || doc.documentElement, html); },
+-		getBoundingClientRect: function () { return new DOMRect(); },
+-		getClientRects: function () { return []; },
+-		toString: function () { return ''; }
+-	};
++/* DOM Range over the engine's nodes (DOM Living Standard, "Ranges"): boundary points with validation, tree-order
++ * comparison, toString, clone/extract/deleteContents, insertNode (splitting a Text start), surroundContents, and
++ * live updates when nodes are inserted or removed through the DOM (removeChild / insertBefore / appendChild /
++ * replaceChild hooks below). Character-data edits other than our own splits do not move boundary points. */
++function rgIsChar(n) { return n.nodeType === 3 || n.nodeType === 4 || n.nodeType === 7 || n.nodeType === 8; }
++function rgLength(n) {
++	if (n.nodeType === 10) return 0;
++	if (rgIsChar(n)) return String(n.data).length;
++	return n.childNodes.length;
++}
++function rgIndex(n) { var i = 0; while ((n = n.previousSibling)) i++; return i; }
++function rgChain(n) { var c = []; for (; n; n = n.parentNode) c.unshift(n); return c; }
++function rgRoot(n) { while (n.parentNode) n = n.parentNode; return n; }
++function rgIncAncestor(a, n) { for (; n; n = n.parentNode) if (n === a) return true; return false; }
++/* -1 when a precedes b in tree order, 1 when it follows, 0 when equal (same root assumed) */
++function rgTreeOrder(a, b) {
++	if (a === b) return 0;
++	var A = rgChain(a), B = rgChain(b), i = 0;
++	while (i < A.length && i < B.length && A[i] === B[i]) i++;
++	if (i === A.length) return -1;
++	if (i === B.length) return 1;
++	return rgIndex(A[i]) < rgIndex(B[i]) ? -1 : 1;
++}
++/* position of boundary point (nA, oA) relative to (nB, oB): -1 before, 0 equal, 1 after */
++function rgCompare(nA, oA, nB, oB) {
++	if (nA === nB) return oA === oB ? 0 : (oA < oB ? -1 : 1);
++	if (rgTreeOrder(nA, nB) > 0) return -rgCompare(nB, oB, nA, oA);
++	if (rgIncAncestor(nA, nB)) {
++		var child = nB;
++		while (child.parentNode !== nA) child = child.parentNode;
++		if (rgIndex(child) < oA) return 1;
++	}
++	return -1;
++}
++var liveRanges = [];
++function rgEachLive(fn) {
++	var keep = [];
++	for (var i = 0; i < liveRanges.length; i++) {
++		var r = typeof WeakRef === 'function' ? liveRanges[i].deref() : liveRanges[i];
++		if (r) { keep.push(liveRanges[i]); fn(r); }
++	}
++	liveRanges = keep;
++}
++function RangeImpl(doc) {
++	this._sc = doc; this._so = 0; this._ec = doc; this._eo = 0;
++	liveRanges.push(typeof WeakRef === 'function' ? new WeakRef(this) : this);
++	if (liveRanges.length > 512) liveRanges.shift();
++}
++var RP = RangeImpl.prototype;
++['START_TO_START', 'START_TO_END', 'END_TO_END', 'END_TO_START'].forEach(function (k, i) {
++	RangeImpl[k] = i; RP[k] = i;
++});
++accessor(RP, 'startContainer', function () { return this._sc; });
++accessor(RP, 'startOffset', function () { return this._so; });
++accessor(RP, 'endContainer', function () { return this._ec; });
++accessor(RP, 'endOffset', function () { return this._eo; });
++accessor(RP, 'collapsed', function () { return this._sc === this._ec && this._so === this._eo; });
++accessor(RP, 'commonAncestorContainer', function () {
++	var c = this._sc;
++	while (!rgIncAncestor(c, this._ec)) c = c.parentNode;
++	return c;
++});
++function rgCheck(n, o) {
++	if (n == null || typeof n.nodeType !== 'number') throw new TypeError('not a Node');
++	if (n.nodeType === 10) throw DOMException('a doctype cannot hold a boundary point', 'InvalidNodeTypeError');
++	o = o >>> 0;
++	if (o > rgLength(n)) throw DOMException('offset out of range', 'IndexSizeError');
++	return o;
++}
++function rgSetStart(r, n, o) {
++	o = rgCheck(n, o);
++	if (rgRoot(r._sc) !== rgRoot(n) || rgCompare(n, o, r._ec, r._eo) > 0) { r._ec = n; r._eo = o; }
++	r._sc = n; r._so = o;
++}
++function rgSetEnd(r, n, o) {
++	o = rgCheck(n, o);
++	if (rgRoot(r._sc) !== rgRoot(n) || rgCompare(n, o, r._sc, r._so) < 0) { r._sc = n; r._so = o; }
++	r._ec = n; r._eo = o;
++}
++function rgParentOf(n) {
++	if (!n || !n.parentNode) throw DOMException('node has no parent', 'InvalidNodeTypeError');
++	return n.parentNode;
++}
++method(RP, 'setStart', function (n, o) { rgSetStart(this, n, o); });
++method(RP, 'setEnd', function (n, o) { rgSetEnd(this, n, o); });
++method(RP, 'setStartBefore', function (n) { var p = rgParentOf(n); rgSetStart(this, p, rgIndex(n)); });
++method(RP, 'setStartAfter', function (n) { var p = rgParentOf(n); rgSetStart(this, p, rgIndex(n) + 1); });
++method(RP, 'setEndBefore', function (n) { var p = rgParentOf(n); rgSetEnd(this, p, rgIndex(n)); });
++method(RP, 'setEndAfter', function (n) { var p = rgParentOf(n); rgSetEnd(this, p, rgIndex(n) + 1); });
++method(RP, 'collapse', function (toStart) {
++	if (toStart) { this._ec = this._sc; this._eo = this._so; } else { this._sc = this._ec; this._so = this._eo; }
++});
++method(RP, 'selectNode', function (n) {
++	var p = rgParentOf(n), i = rgIndex(n);
++	this._sc = p; this._so = i; this._ec = p; this._eo = i + 1;
++});
++method(RP, 'selectNodeContents', function (n) {
++	if (n.nodeType === 10) throw DOMException('doctype', 'InvalidNodeTypeError');
++	this._sc = n; this._so = 0; this._ec = n; this._eo = rgLength(n);
++});
++method(RP, 'compareBoundaryPoints', function (how, src) {
++	if (rgRoot(this._sc) !== rgRoot(src._sc)) throw DOMException('different trees', 'WrongDocumentError');
++	switch (how) {
++	case 0: return rgCompare(this._sc, this._so, src._sc, src._so);
++	case 1: return rgCompare(this._ec, this._eo, src._sc, src._so);
++	case 2: return rgCompare(this._ec, this._eo, src._ec, src._eo);
++	case 3: return rgCompare(this._sc, this._so, src._ec, src._eo);
++	}
++	throw DOMException('bad comparison type', 'NotSupportedError');
++});
++method(RP, 'comparePoint', function (n, o) {
++	if (rgRoot(n) !== rgRoot(this._sc)) throw DOMException('different trees', 'WrongDocumentError');
++	o = rgCheck(n, o);
++	if (rgCompare(n, o, this._sc, this._so) < 0) return -1;
++	if (rgCompare(n, o, this._ec, this._eo) > 0) return 1;
++	return 0;
++});
++method(RP, 'isPointInRange', function (n, o) {
++	if (rgRoot(n) !== rgRoot(this._sc)) return false;
++	o = rgCheck(n, o);
++	return rgCompare(n, o, this._sc, this._so) >= 0 && rgCompare(n, o, this._ec, this._eo) <= 0;
++});
++method(RP, 'intersectsNode', function (n) {
++	if (rgRoot(n) !== rgRoot(this._sc)) return false;
++	var p = n.parentNode;
++	if (!p) return true;
++	var i = rgIndex(n);
++	return rgCompare(p, i, this._ec, this._eo) < 0 && rgCompare(p, i + 1, this._sc, this._so) > 0;
++});
++method(RP, 'cloneRange', function () {
++	var r = new RangeImpl(this._sc.nodeType === 9 ? this._sc : this._sc.ownerDocument);
++	r._sc = this._sc; r._so = this._so; r._ec = this._ec; r._eo = this._eo;
+ 	return r;
++});
++method(RP, 'detach', function () {});
++function rgContained(r, n) {
++	if (rgRoot(n) !== rgRoot(r._sc)) return false;
++	return rgCompare(n, 0, r._sc, r._so) > 0 && rgCompare(n, rgLength(n), r._ec, r._eo) < 0;
++}
++method(RP, 'toString', function () {
++	var sc = this._sc, ec = this._ec, s = '';
++	if (sc === ec && sc.nodeType === 3) return String(sc.data).slice(this._so, this._eo);
++	if (sc.nodeType === 3) s += String(sc.data).slice(this._so);
++	var r = this;
++	(function walk(n) {
++		for (var c = n.firstChild; c; c = c.nextSibling) {
++			if (c.nodeType === 3 && rgContained(r, c)) s += c.data;
++			walk(c);
++		}
++	})(this.commonAncestorContainer);
++	if (ec.nodeType === 3) s += String(ec.data).slice(0, this._eo);
++	return s;
++});
++function rgDoc(r) { return r._sc.nodeType === 9 ? r._sc : r._sc.ownerDocument; }
++/* the clone / extract algorithm of the DOM spec; extract=false clones */
++function rgContents(r, extract) {
++	var doc = rgDoc(r), frag = doc.createDocumentFragment();
++	var sc = r._sc, so = r._so, ec = r._ec, eo = r._eo;
++	if (sc === ec && so === eo) return frag;
++	if (sc === ec && rgIsChar(sc)) {
++		var cl = sc.cloneNode(false);
++		cl.data = String(sc.data).slice(so, eo);
++		frag.appendChild(cl);
++		if (extract) sc.data = String(sc.data).slice(0, so) + String(sc.data).slice(eo);
++		return frag;
++	}
++	var ca = r.commonAncestorContainer, firstPC = null, lastPC = null, c;
++	if (!rgIncAncestor(sc, ec)) { firstPC = sc; while (firstPC.parentNode !== ca) firstPC = firstPC.parentNode; }
++	if (!rgIncAncestor(ec, sc)) { lastPC = ec; while (lastPC.parentNode !== ca) lastPC = lastPC.parentNode; }
++	var contained = [];
++	for (c = ca.firstChild; c; c = c.nextSibling) if (rgContained(r, c)) contained.push(c);
++	contained.forEach(function (n) {
++		if (n.nodeType === 10) throw DOMException('range contains a doctype', 'HierarchyRequestError');
++	});
++	var newNode, newOffset;
++	if (extract) {
++		if (rgIncAncestor(sc, ec)) { newNode = sc; newOffset = so; }
++		else {
++			var ref = sc;
++			while (ref.parentNode && !rgIncAncestor(ref.parentNode, ec)) ref = ref.parentNode;
++			newNode = ref.parentNode; newOffset = rgIndex(ref) + 1;
++		}
++	}
++	var sub;
++	if (firstPC && rgIsChar(firstPC)) {
++		c = sc.cloneNode(false); c.data = String(sc.data).slice(so); frag.appendChild(c);
++		if (extract) sc.data = String(sc.data).slice(0, so);
++	} else if (firstPC) {
++		c = firstPC.cloneNode(false); frag.appendChild(c);
++		sub = new RangeImpl(doc); sub._sc = sc; sub._so = so; sub._ec = firstPC; sub._eo = rgLength(firstPC);
++		c.appendChild(rgContents(sub, extract));
++	}
++	contained.forEach(function (n) { frag.appendChild(extract ? n : n.cloneNode(true)); });
++	if (lastPC && rgIsChar(lastPC)) {
++		c = ec.cloneNode(false); c.data = String(ec.data).slice(0, eo); frag.appendChild(c);
++		if (extract) ec.data = String(ec.data).slice(eo);
++	} else if (lastPC) {
++		c = lastPC.cloneNode(false); frag.appendChild(c);
++		sub = new RangeImpl(doc); sub._sc = lastPC; sub._so = 0; sub._ec = ec; sub._eo = eo;
++		c.appendChild(rgContents(sub, extract));
++	}
++	if (extract) { r._sc = r._ec = newNode; r._so = r._eo = newOffset; }
++	return frag;
++}
++method(RP, 'cloneContents', function () { return rgContents(this, false); });
++method(RP, 'extractContents', function () { return rgContents(this, true); });
++method(RP, 'deleteContents', function () { rgContents(this, true); });
++/* Text.splitText with the live-range updates the spec gives it */
++function rgSplit(t, off) {
++	var data = String(t.data);
++	if (off > data.length) throw DOMException('offset out of range', 'IndexSizeError');
++	var nt = (t.ownerDocument || document).createTextNode(data.slice(off)), p = t.parentNode, idx;
++	if (p) {
++		idx = rgIndex(t);
++		p.insertBefore(nt, t.nextSibling);
++		rgEachLive(function (r) {
++			if (r._sc === t && r._so > off) { r._sc = nt; r._so -= off; }
++			if (r._ec === t && r._eo > off) { r._ec = nt; r._eo -= off; }
++			if (r._sc === p && r._so === idx + 1) r._so++;
++			if (r._ec === p && r._eo === idx + 1) r._eo++;
++		});
++	}
++	t.data = data.slice(0, off);
++	return nt;
++}
++method(RP, 'insertNode', function (node) {
++	var sc = this._sc, so = this._so;
++	if (sc.nodeType === 7 || sc.nodeType === 8 || (sc.nodeType === 3 && !sc.parentNode) || sc === node)
++		throw DOMException('cannot insert here', 'HierarchyRequestError');
++	var ref = sc.nodeType === 3 ? sc : (sc.childNodes[so] || null);
++	var parent = ref ? ref.parentNode : sc;
++	if (sc.nodeType === 3) ref = rgSplit(sc, so);
++	if (node === ref) ref = ref.nextSibling;
++	if (node.parentNode) node.parentNode.removeChild(node);
++	var newOffset = ref ? rgIndex(ref) : rgLength(parent);
++	newOffset += node.nodeType === 11 ? node.childNodes.length : 1;
++	var wasCollapsed = this.collapsed;
++	parent.insertBefore(node, ref);
++	if (wasCollapsed) { this._ec = parent; this._eo = newOffset; }
++});
++method(RP, 'surroundContents', function (np) {
++	var r = this;
++	[r._sc, r._ec].forEach(function (b) {
++		var other = b === r._sc ? r._ec : r._sc;
++		if (b.nodeType !== 3 && !rgIncAncestor(b, other) && !rgIsChar(b))
++			throw DOMException('range partially contains a non-Text node', 'InvalidStateError');
++	});
++	if (np.nodeType === 9 || np.nodeType === 10 || np.nodeType === 11)
++		throw DOMException('bad new parent', 'InvalidNodeTypeError');
++	var frag = this.extractContents();
++	while (np.firstChild) np.removeChild(np.firstChild);
++	this.insertNode(np);
++	np.appendChild(frag);
++	this.selectNode(np);
++});
++method(RP, 'createContextualFragment', function (html) { var d = rgDoc(this); return fragmentFromHTML(d.body || d.documentElement, html); });
++method(RP, 'getBoundingClientRect', function () { return new DOMRect(); });
++method(RP, 'getClientRects', function () { return []; });
++function makeRange(doc) { return new RangeImpl(doc); }
++global.Range = function () { return new RangeImpl(document); };
++global.Range.prototype = RP;
++['START_TO_START', 'START_TO_END', 'END_TO_END', 'END_TO_START'].forEach(function (k, i) { global.Range[k] = i; });
++
++/* live-range updates for DOM insertion and removal done through the DOM API */
++function rgBeforeRemove(n) {
++	var p = n.parentNode;
++	if (!p || !liveRanges.length) return;
++	var idx = rgIndex(n);
++	rgEachLive(function (r) {
++		if (rgIncAncestor(n, r._sc)) { r._sc = p; r._so = idx; }
++		if (rgIncAncestor(n, r._ec)) { r._ec = p; r._eo = idx; }
++		if (r._sc === p && r._so > idx) r._so--;
++		if (r._ec === p && r._eo > idx) r._eo--;
++	});
++}
++function rgAfterInsert(p, idx, count) {
++	if (!liveRanges.length) return;
++	rgEachLive(function (r) {
++		if (r._sc === p && r._so > idx) r._so += count;
++		if (r._ec === p && r._eo > idx) r._eo += count;
++	});
+ }
++(function () {
++	var rm = NodeP.removeChild, ins = NodeP.insertBefore, app = NodeP.appendChild, rep = NodeP.replaceChild;
++	function insertCommon(self, node, ref, call) {
++		if (node && node.parentNode) rgBeforeRemove(node);
++		var count = node && node.nodeType === 11 ? node.childNodes.length : 1;
++		var ret = call();
++		if (liveRanges.length) {
++			var first = count && node.nodeType === 11 ? null : node;
++			var idx = first ? rgIndex(first) : (ref ? rgIndex(ref) - count : rgLength(self) - count);
++			rgAfterInsert(self, idx, count);
++		}
++		return ret;
++	}
++	method(NodeP, 'removeChild', function (n) {
++		if (n && n.parentNode === this) rgBeforeRemove(n);
++		return rm.call(this, n);
++	});
++	method(NodeP, 'insertBefore', function (node, ref) {
++		var self = this, args = arguments;
++		return insertCommon(this, node, ref, function () { return ins.apply(self, args); });
++	});
++	method(NodeP, 'appendChild', function (node) {
++		var self = this, args = arguments;
++		return insertCommon(this, node, null, function () { return app.apply(self, args); });
++	});
++	method(NodeP, 'replaceChild', function (node, old) {
++		var self = this, args = arguments;
++		if (old && old.parentNode === this) rgBeforeRemove(old);
++		return insertCommon(this, node, old, function () { return rep.apply(self, args); });
++	});
++})();
+ method(DocP, 'createRange', function () { return makeRange(this); });
+ global.getSelection = function () {
+ 	return { rangeCount: 0, isCollapsed: true, type: 'None', anchorNode: null, focusNode: null,
