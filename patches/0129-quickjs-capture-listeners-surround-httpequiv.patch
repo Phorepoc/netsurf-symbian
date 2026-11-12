@@ -1,0 +1,215 @@
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
+@@ -346,8 +346,19 @@
+ /* event listener plumbing                                            */
+ /* ------------------------------------------------------------------ */
+ 
++/* capture listeners live in the JS listener map under "!" + type and have a
++ * libdom listener of their own, registered with capture = true */
++static void qjs_handler_common(dom_event *evt, void *pw, bool capture);
+ static void qjs_generic_handler(dom_event *evt, void *pw)
+ {
++	qjs_handler_common(evt, pw, false);
++}
++static void qjs_capture_handler(dom_event *evt, void *pw)
++{
++	qjs_handler_common(evt, pw, true);
++}
++static void qjs_handler_common(dom_event *evt, void *pw, bool capture)
++{
+ 	struct jsthread *t = pw;
+ 	JSContext *ctx;
+ 	dom_event_target *targ = NULL;
+@@ -369,6 +380,16 @@
+ 
+ 	args[0] = qjs_dom_wrap_node(t, (dom_node *)targ);
+ 	args[1] = qjs_ds_to_js(ctx, type);
++	if (capture) {
++		char key[80];
++		size_t n = dom_string_byte_length(type);
++		if (n > sizeof(key) - 2)
++			n = sizeof(key) - 2;
++		key[0] = '!';
++		memcpy(key + 1, dom_string_data(type), n);
++		JS_FreeValue(ctx, args[1]);
++		args[1] = JS_NewStringLen(ctx, key, n + 1);
++	}
+ 	args[2] = qjs_dom_wrap_event(t, evt);
+ 
+ 	qjs_deadline_start(t);
+@@ -392,8 +413,9 @@
+ /* ensure ONE libdom listener is registered for (node, type) */
+ static void
+ qjs_ensure_dom_listener(struct jsthread *t, JSValueConst node_js,
+-			dom_node *node, const char *type)
++			dom_node *node, const char *type, bool capture)
+ {
++	char key[80];
+ 	JSContext *ctx = t->ctx;
+ 	JSValue reg;
+ 	JSValue seen;
+@@ -408,34 +430,62 @@
+ 				  JS_DupValue(ctx, reg));
+ 	}
+ 
+-	seen = JS_GetPropertyStr(ctx, reg, type);
++	snprintf(key, sizeof(key), "%s%s", capture ? "!" : "", type);
++	seen = JS_GetPropertyStr(ctx, reg, key);
+ 	if (JS_ToBool(ctx, seen)) {
+ 		JS_FreeValue(ctx, seen);
+ 		JS_FreeValue(ctx, reg);
+ 		return;
+ 	}
+ 	JS_FreeValue(ctx, seen);
+-	JS_SetPropertyStr(ctx, reg, type, JS_TRUE);
++	JS_SetPropertyStr(ctx, reg, key, JS_TRUE);
+ 	JS_FreeValue(ctx, reg);
+ 
+ 	if (dom_string_create((const uint8_t *)type, strlen(type),
+ 			      &tds) != DOM_NO_ERR)
+ 		return;
+ 
+-	if (dom_event_listener_create(qjs_generic_handler, t,
++	if (dom_event_listener_create(capture ? qjs_capture_handler :
++				      qjs_generic_handler, t,
+ 				      &listener) == DOM_NO_ERR) {
+ 		dom_event_target_add_event_listener(
+-			(dom_event_target *)node, tds, listener, false);
++			(dom_event_target *)node, tds, listener, capture);
+ 		dom_event_listener_unref(listener);
+ 	}
+ 	dom_string_unref(tds);
+ }
+ 
++/* addEventListener's third argument: a boolean or { capture: bool } */
++static bool qjs_capture_arg(JSContext *ctx, int argc, JSValueConst *argv)
++{
++	bool cap = false;
++
++	if (argc < 3)
++		return false;
++	if (JS_IsObject(argv[2])) {
++		JSValue c = JS_GetPropertyStr(ctx, argv[2], "capture");
++		cap = JS_ToBool(ctx, c);
++		JS_FreeValue(ctx, c);
++	} else
++		cap = JS_ToBool(ctx, argv[2]);
++	return cap;
++}
++static JSValue qjs_capture_key(JSContext *ctx, JSValueConst type)
++{
++	char key[80];
++	const char *t = JS_ToCString(ctx, type);
++	snprintf(key, sizeof(key), "!%s", t != NULL ? t : "");
++	if (t != NULL)
++		JS_FreeCString(ctx, t);
++	return JS_NewString(ctx, key);
++}
++
+ /* shared by nodes and window; nodes also register with libdom */
+ static JSValue
+ qjs_addEventListener(JSContext *ctx, JSValueConst this_val,
+ 		     int argc, JSValueConst *argv)
+ {
++	bool capture;
+ 	struct jsthread *t = qjs_thread(ctx);
+ 	dom_node *node = qjs_this_node(ctx, this_val);
+ 	const char *type;
+@@ -448,15 +498,17 @@
+ 	type = JS_ToCString(ctx, argv[0]);
+ 	if (type == NULL)
+ 		return JS_UNDEFINED;
++	capture = node != NULL && qjs_capture_arg(ctx, argc, argv);
+ 
+ 	args[0] = this_val;
+-	args[1] = argv[0];
++	args[1] = capture ? qjs_capture_key(ctx, argv[0]) : JS_DupValue(ctx, argv[0]);
+ 	args[2] = argv[1];
+ 	ret = qjs_call_helper(ctx, "__ns_addl", 3, args);
+ 	JS_FreeValue(ctx, ret);
++	JS_FreeValue(ctx, args[1]);
+ 
+ 	if (node != NULL)
+-		qjs_ensure_dom_listener(t, this_val, node, type);
++		qjs_ensure_dom_listener(t, this_val, node, type, capture);
+ 
+ 	JS_FreeCString(ctx, type);
+ 	return JS_UNDEFINED;
+@@ -472,10 +524,12 @@
+ 	if (argc < 2)
+ 		return JS_UNDEFINED;
+ 	args[0] = this_val;
+-	args[1] = argv[0];
++	args[1] = qjs_this_node(ctx, this_val) != NULL && qjs_capture_arg(ctx, argc, argv) ?
++		qjs_capture_key(ctx, argv[0]) : JS_DupValue(ctx, argv[0]);
+ 	args[2] = argv[1];
+ 	ret = qjs_call_helper(ctx, "__ns_reml", 3, args);
+ 	JS_FreeValue(ctx, ret);
++	JS_FreeValue(ctx, args[1]);
+ 	return JS_UNDEFINED;
+ }
+ 
+@@ -3404,7 +3458,7 @@
+ 					if (tnode != NULL) {
+ 						qjs_ensure_dom_listener(
+ 							t, targ_js, tnode,
+-							pname + 2);
++							pname + 2, false);
+ 					}
+ 					JS_FreeValue(ctx, targ_js);
+ 					JS_FreeValue(ctx, global);
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -623,7 +623,7 @@
+ 	});
+ }
+ [['title'], ['lang'], ['dir'], ['name'], ['alt'], ['rel'], ['target'],
+- ['placeholder'], ['accessKey', 'accesskey'], ['htmlFor', 'for'], ['method'],
++ ['placeholder'], ['accessKey', 'accesskey'], ['htmlFor', 'for'], ['httpEquiv', 'http-equiv'], ['method'],
+  ['enctype'], ['autocomplete'], ['role'], ['slot'], ['label'], ['content'],
+  ['charset'], ['media'], ['sizes'], ['srcset'], ['coords'], ['shape'],
+  ['download'], ['hreflang'], ['crossOrigin', 'crossorigin'], ['loading'],
+@@ -3667,10 +3667,11 @@
+ });
+ method(RP, 'surroundContents', function (np) {
+ 	var r = this;
+-	[r._sc, r._ec].forEach(function (b) {
+-		var other = b === r._sc ? r._ec : r._sc;
+-		if (b.nodeType !== 3 && !rgIncAncestor(b, other) && !rgIsChar(b))
+-			throw DOMException('range partially contains a non-Text node', 'InvalidStateError');
++	/* a node is partially contained when it is an inclusive ancestor of one boundary node but not the other */
++	[[r._sc, r._ec], [r._ec, r._sc]].forEach(function (pair) {
++		for (var n = pair[0]; n; n = n.parentNode)
++			if (!rgIncAncestor(n, pair[1]) && n.nodeType !== 3)
++				throw DOMException('range partially contains a non-Text node', 'InvalidStateError');
+ 	});
+ 	if (np.nodeType === 9 || np.nodeType === 10 || np.nodeType === 11)
+ 		throw DOMException('bad new parent', 'InvalidNodeTypeError');
+@@ -4011,4 +4012,27 @@
+ /* unhandled promise rejections are reported, not fatal */
+ global.addEventListener('unhandledrejection', function () {});
+ 
++/* on<event> handler properties on nodes. The engine calls a node's handler property only when the node has a
++ * listener registered with libdom for that event type, which addEventListener and inline attributes do but a plain
++ * property assignment did not (form.onsubmit = f was never called). The setter now registers a shared no-op
++ * listener, so the dispatch reaches __ns_call, which runs the handler property. */
++function nsOnNoop() {}
++['abort', 'blur', 'change', 'click', 'contextmenu', 'dblclick', 'error', 'focus', 'focusin', 'focusout', 'input',
++ 'invalid', 'keydown', 'keypress', 'keyup', 'load', 'mousedown', 'mouseenter', 'mouseleave', 'mousemove',
++ 'mouseout', 'mouseover', 'mouseup', 'pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'reset', 'scroll',
++ 'select', 'submit', 'toggle', 'touchstart', 'touchmove', 'touchend', 'touchcancel', 'transitionend',
++ 'animationend', 'wheel'].forEach(function (type) {
++	[ElementP, DocP].forEach(function (P) {
++		if (Object.getOwnPropertyDescriptor(P, 'on' + type)) return;
++		accessor(P, 'on' + type, function () {
++			var h = this.__ns_on && this.__ns_on[type];
++			return h === undefined ? null : h;
++		}, function (f) {
++			var m = this.__ns_on || (this.__ns_on = {});
++			m[type] = typeof f === 'function' ? f : null;
++			if (m[type]) this.addEventListener(type, nsOnNoop);
++		});
++	});
++});
++
+ })(globalThis);
