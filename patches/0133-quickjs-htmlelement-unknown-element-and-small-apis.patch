@@ -1,0 +1,78 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -642,7 +642,7 @@
+  ['draggable', 'draggable', 'bool'], ['inert', 'inert', 'bool'],
+  ['href', 'href', 'url'], ['src', 'src', 'url'], ['action', 'action', 'url'],
+  ['poster', 'poster', 'url'], ['cite', 'cite', 'url'], ['data', 'data', 'url'],
+- ['formAction', 'formaction', 'url']
++ ['formAction', 'formaction', 'url'], ['ping'], ['dropzone'], ['reversed', 'reversed', 'bool']
+ ].forEach(function (r) { reflect(r[0], r[1], r[2]); });
+ 
+ /* type attribute (input defaults to "text") */
+@@ -2950,6 +2950,15 @@
+ };
+ 
+ /* HTMLxxxElement interface objects for instanceof checks */
++var HTML_KNOWN = new RegExp('^(' + ('a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption cite code ' +
++	'col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form ' +
++	'h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark menu ' +
++	'meta meter nav noscript object ol optgroup option output p picture pre progress q rp rt ruby s samp script search ' +
++	'section select slot small source span strong style sub summary sup table tbody td template textarea tfoot th ' +
++	'thead time title tr track u ul var video wbr').split(' ').join('|') + ')$', 'i');
++function isHTMLElementNode(o) {
++	return isElement(o) && (!o.namespaceURI || o.namespaceURI === 'http://www.w3.org/1999/xhtml');
++}
+ var TAG_IFACES = {
+ 	HTMLAnchorElement: 'A', HTMLAreaElement: 'AREA', HTMLBodyElement: 'BODY', HTMLBRElement: 'BR',
+ 	HTMLButtonElement: 'BUTTON', HTMLCanvasElement: 'CANVAS', HTMLDataElement: 'DATA',
+@@ -2976,10 +2985,20 @@
+ 	var re = new RegExp('^(' + TAG_IFACES[name] + ')$', 'i');
+ 	var C = function () { throw new TypeError('Illegal constructor'); };
+ 	C.prototype = ElementP;
+-	def(C, Symbol.hasInstance, { value: function (o) { return isElement(o) && (!TAG_IFACES[name] || re.test(o.tagName)); } });
++	def(C, Symbol.hasInstance, { value: name === 'HTMLUnknownElement'
++		? function (o) { return isHTMLElementNode(o) && !HTML_KNOWN.test(o.tagName); }
++		: function (o) { return isElement(o) && re.test(o.tagName); } });
+ 	def(C, 'name', { value: name });
+ 	global[name] = C;
+ });
++/* HTMLElement: any element in the HTML namespace (an unknown tag is an HTMLUnknownElement, which is one too) */
++(function () {
++	var C = function () { throw new TypeError('Illegal constructor'); };
++	C.prototype = ElementP;
++	def(C, Symbol.hasInstance, { value: isHTMLElementNode });
++	def(C, 'name', { value: 'HTMLElement' });
++	global.HTMLElement = C;
++})();
+ [['Comment', 8], ['DocumentFragment', 11], ['DocumentType', 10], ['ProcessingInstruction', 7], ['Attr', 2], ['CDATASection', 4]].forEach(function (p) {
+ 	var C = function () { throw new TypeError('Illegal constructor'); };
+ 	def(C, Symbol.hasInstance, { value: function (o) { return !!o && o.nodeType === p[1]; } });
+@@ -3417,6 +3436,19 @@
+ method(DocP, 'getSelection', function () { return global.getSelection(); });
+ method(DocP, 'execCommand', function () { return false; });
+ method(DocP, 'queryCommandSupported', function () { return false; });
++method(DocP, 'queryCommandEnabled', function () { return false; });
++method(DocP, 'queryCommandIndeterm', function () { return false; });
++method(DocP, 'queryCommandState', function () { return false; });
++method(DocP, 'queryCommandValue', function () { return ''; });
++/* translate (an enumerated attribute; inherited "yes" unless an ancestor says "no") and accessKeyLabel */
++accessor(ElementP, 'translate', function () {
++	for (var e = this; e && e.nodeType === 1; e = e.parentNode) {
++		var v = e.getAttribute('translate');
++		if (v !== null) { v = v.toLowerCase(); if (v === 'no') return false; if (v === 'yes' || v === '') return true; }
++	}
++	return true;
++}, function (v) { this.setAttribute('translate', v ? 'yes' : 'no'); });
++accessor(ElementP, 'accessKeyLabel', function () { return this.getAttribute('accesskey') || ''; });
+ method(DocP, 'exitFullscreen', function () { return Promise.resolve(); });
+ method(DocP, 'exitPointerLock', function () {});
+ method(DocP, 'open', function () { return this; });
+@@ -4024,7 +4056,7 @@
+  'invalid', 'keydown', 'keypress', 'keyup', 'load', 'mousedown', 'mouseenter', 'mouseleave', 'mousemove',
+  'mouseout', 'mouseover', 'mouseup', 'pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'reset', 'scroll',
+  'select', 'submit', 'toggle', 'touchstart', 'touchmove', 'touchend', 'touchcancel', 'transitionend',
+- 'animationend', 'wheel'].forEach(function (type) {
++ 'animationend', 'wheel', 'drag', 'dragstart', 'dragenter', 'dragover', 'dragleave', 'dragend', 'drop'].forEach(function (type) {
+ 	[ElementP, DocP].forEach(function (P) {
+ 		if (Object.getOwnPropertyDescriptor(P, 'on' + type)) return;
+ 		accessor(P, 'on' + type, function () {
