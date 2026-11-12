@@ -1,0 +1,24 @@
+--- a/netsurf/content/handlers/html/layout.c
++++ b/netsurf/content/handlers/html/layout.c
+@@ -801,8 +801,19 @@
+ 						INTTOFIX(1), CSS_UNIT_EM));
+ 		}
+ 
+-		if (min < width && !box_has_percentage_max_width(b))
+-			min = width;
++		/* a replaced element with a percentage width is compressible
++		 * (CSS Sizing 3, 5.2.2): its min-content contribution is 0, so
++		 * an <img style="width:100%"> follows its container instead of
++		 * forcing the container (a grid track, a table cell, a
++		 * shrink-to-fit block) to the image's intrinsic width */
++		if (min < width && !box_has_percentage_max_width(b)) {
++			css_fixed pv = 0;
++			css_unit pu = CSS_UNIT_PX;
++			if (!((b->object || box_has_intrinsic(b)) &&
++					css_computed_width(b->style, &pv, &pu) ==
++					CSS_WIDTH_SET && pu == CSS_UNIT_PCT))
++				min = width;
++		}
+ 		if (width > 0)
+ 			max += width;
+ 
