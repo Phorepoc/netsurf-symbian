@@ -1,0 +1,25 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -2941,6 +2941,22 @@
+ 		createDocument: function () { return ns.parseDocument(''); },
+ 		createDocumentType: function (n) { return { nodeType: 10, name: n }; } };
+ });
++// <iframe>/<frame>/<object> contentDocument: a document of its own per element, created on first use (an empty HTML
++// document; the frame's src is not loaded into it and it is not rendered). Scripts that build into a frame's document
++// through the DOM -- Acid3's getTestDocument() -- get a real Document to work on instead of undefined.
++var frameDocs = new WeakMap();
++function frameDocument(el) {
++	var t = String(el.tagName || '').toUpperCase();
++	if (t !== 'IFRAME' && t !== 'FRAME' && t !== 'OBJECT')
++		return undefined;
++	var d = frameDocs.get(el);
++	if (!d) {
++		d = ns.parseDocument('<!DOCTYPE html><html><head><title></title></head><body></body></html>');
++		frameDocs.set(el, d);
++	}
++	return d;
++}
++accessor(ElementP, 'contentDocument', function () { return frameDocument(this); });
+ method(DocP, 'createElementNS', function (nsURI, qname) { return this.createElement(String(qname).replace(/^.*:/, '')); });
+ method(DocP, 'importNode', function (n, deep) { return n.cloneNode(!!deep); });
+ method(DocP, 'adoptNode', function (n) { if (n.parentNode) n.parentNode.removeChild(n); return n; });
