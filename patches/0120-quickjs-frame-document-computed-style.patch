@@ -1,0 +1,67 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -2545,8 +2545,63 @@
+ global.MediaQueryList = MediaQueryList;
+ global.matchMedia = function (q) { return new MediaQueryList(toStr(q)); };
+ 
++/* A frame's own document (contentDocument, patch 0119) is not laid out, so the engine has no computed style for its
++ * nodes. Cascade that document's <style> sheets here instead: every rule whose selector matches (Element.matches, the
++ * selector engine above), ordered by specificity then source order. A group with an invalid selector is dropped
++ * whole, as CSS says. Declared values only (no inheritance, no initial values beyond what a rule sets). */
++function cssSpecificity(sel) {
++	var s = sel.replace(/"[^"]*"|'[^']*'/g, '').replace(/::?(before|after|first-line|first-letter)\b/g, ' T ');
++	var a = (s.match(/#[\w-]+/g) || []).length;
++	var b = (s.match(/\.[\w-]+|\[[^\]]*\]|:(?!not\()[\w-]+(\([^)]*\))?/g) || []).length;
++	var c = (s.replace(/:not\(/g, ' ').replace(/[#.][\w-]+|\[[^\]]*\]|:[\w-]+(\([^)]*\))?/g, ' ').match(/(^|[\s>+~(])[a-zA-Z][\w-]*/g) || []).length;
++	return a * 65536 + b * 256 + c;
++}
++function splitSelectorGroup(text) {
++	var out = [], depth = 0, start = 0, q = null;
++	for (var i = 0; i < text.length; i++) {
++		var ch = text.charAt(i);
++		if (q) { if (ch === q) q = null; continue; }
++		if (ch === '"' || ch === "'") q = ch;
++		else if (ch === '(' || ch === '[') depth++;
++		else if (ch === ')' || ch === ']') depth--;
++		else if (ch === ',' && depth === 0) { out.push(text.slice(start, i)); start = i + 1; }
++	}
++	out.push(text.slice(start));
++	return out.map(function (x) { return x.trim(); });
++}
++function frameComputed(el) {
++	var doc = el.ownerDocument, rules = [], order = 0, out = {};
++	var sheets = doc.getElementsByTagName('style');
++	for (var i = 0; i < sheets.length; i++) {
++		var text = String(sheets[i].textContent || '').replace(/\/\*[\s\S]*?\*\//g, '');
++		var re = /([^{}]+)\{([^{}]*)\}/g, m;
++		while ((m = re.exec(text)) !== null) {
++			var group = splitSelectorGroup(m[1]), hits = [], bad = false;
++			for (var g = 0; g < group.length && !bad; g++) {
++				try { if (group[g] === '' ) bad = true; else if (el.matches(group[g])) hits.push(cssSpecificity(group[g])); }
++				catch (e) { bad = true; }
++			}
++			if (bad || !hits.length)
++				continue;
++			rules.push({ spec: Math.max.apply(null, hits), order: order++, decls: m[2] });
++		}
++	}
++	rules.sort(function (x, y) { return x.spec - y.spec || x.order - y.order; });
++	rules.forEach(function (r) {
++		r.decls.split(';').forEach(function (d) {
++			var k = d.indexOf(':');
++			if (k > 0)
++				out[d.slice(0, k).trim().toLowerCase()] = d.slice(k + 1).trim();
++		});
++	});
++	if (!('z-index' in out))
++		out['z-index'] = 'auto';
++	return out;
++}
+ global.getComputedStyle = function (el, pseudo) {
+-	var c = (el && ns.computed(el)) || { display: 'none' };
++	var c = el && el.ownerDocument && el.ownerDocument !== document ? frameComputed(el) : null;
++	if (!c)
++		c = (el && ns.computed(el)) || { display: 'none' };
+ 	var props = {};
+ 	Object.keys(c).forEach(function (k) {
+ 		var kebab = k.indexOf('-') >= 0 ? k : camelToKebab(k);
