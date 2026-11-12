@@ -1,0 +1,253 @@
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js
+@@ -3516,6 +3516,7 @@
+ 
+ /* live-range updates for DOM insertion and removal done through the DOM API */
+ function rgBeforeRemove(n) {
++	niBeforeRemove(n);
+ 	var p = n.parentNode;
+ 	if (!p || !liveRanges.length) return;
+ 	var idx = rgIndex(n);
+@@ -3571,37 +3572,214 @@
+ 		getRangeAt: function () { return makeRange(document); }, collapse: function () {},
+ 		selectAllChildren: function () {}, empty: function () {}, toString: function () { return ''; } };
+ };
+-function makeWalker(root, whatToShow, filter, elementsOnly) {
+-	var nodes = [];
+-	(function walk(n) {
+-		for (var c = n.firstChild; c; c = c.nextSibling) {
+-			var t = c.nodeType;
+-			var show = whatToShow === undefined || whatToShow === 0xFFFFFFFF ||
+-				(whatToShow & (1 << (t - 1)));
+-			var ok = show;
+-			if (ok && filter) {
+-				var f = typeof filter === 'function' ? filter : filter.acceptNode;
+-				var res = f ? f.call(filter, c) : 1;
+-				ok = res === 1;
+-				if (res === 2) continue;
++/* NodeIterator and TreeWalker (DOM Living Standard, "Traversal") over the engine's nodes. Both are live: they
++ * walk the tree as it is when each step is taken. A NodeIterator keeps a reference node and a "pointer before
++ * reference" flag, and adjusts them (and the candidate of a traversal still in progress, as WebKit does) in the
++ * node-removal hooks below, so a filter that removes nodes behaves as the spec and Acid3 expect. */
++function trFilter(w, n) {
++	if (w._active) throw new DOMException('filter is already running', 'InvalidStateError');
++	var bit = 1 << (n.nodeType - 1);
++	if (!(w._what & bit)) return 3;
++	var f = w._filter;
++	if (f === null || f === undefined) return 1;
++	w._active = true;
++	try {
++		var r = typeof f === 'function' ? f.call(undefined, n) : f.acceptNode(n);
++		return (Number(r) >>> 0) & 0xFFFF;
++	} finally { w._active = false; }
++}
++function trNext(n, root) {
++	if (n.firstChild) return n.firstChild;
++	for (; n; n = n.parentNode) {
++		if (n === root) return null;
++		if (n.nextSibling) return n.nextSibling;
++	}
++	return null;
++}
++function trPrev(n, root) {
++	if (n === root) return null;
++	var s = n.previousSibling;
++	if (!s) return n.parentNode;
++	while (s.lastChild) s = s.lastChild;
++	return s;
++}
++function trLastDesc(n) { while (n.lastChild) n = n.lastChild; return n; }
++var liveIterators = [];
++function NodeIteratorImpl() { throw new TypeError('Illegal constructor'); }
++function makeNodeIterator(root, what, filter) {
++	var it = Object.create(NodeIteratorImpl.prototype);
++	it._root = root; it._what = what === undefined ? 0xFFFFFFFF : (what >>> 0); it._filter = filter === undefined ? null : filter;
++	it._ref = root; it._before = true; it._cand = null; it._active = false;
++	liveIterators.push(typeof WeakRef === 'function' ? new WeakRef(it) : it);
++	return it;
++}
++function niMove(it, forward) {
++	var p = it._cand;
++	if (forward) {
++		if (!p.before) { var n = trNext(p.node, it._root); if (!n) return false; p.node = n; } else p.before = false;
++	} else {
++		if (p.before) { var q = trPrev(p.node, it._root); if (!q) return false; p.node = q; } else p.before = true;
++	}
++	return true;
++}
++function niTraverse(it, forward) {
++	it._cand = { node: it._ref, before: it._before };
++	var result = null;
++	try {
++		while (niMove(it, forward)) {
++			var prov = it._cand.node;
++			if (trFilter(it, prov) === 1) {
++				it._ref = it._cand.node; it._before = it._cand.before;
++				result = prov;
++				break;
+ 			}
+-			if (ok) nodes.push(c);
+-			walk(c);
+ 		}
+-	})(root);
+-	var i = -1;
+-	return {
+-		root: root, whatToShow: whatToShow, filter: filter, currentNode: root,
+-		nextNode: function () { if (i + 1 >= nodes.length) return null; this.currentNode = nodes[++i]; return this.currentNode; },
+-		previousNode: function () { if (i <= 0) return null; this.currentNode = nodes[--i]; return this.currentNode; },
+-		firstChild: function () { return this.nextNode(); },
+-		parentNode: function () { var p = this.currentNode.parentNode; if (p && p !== root) { this.currentNode = p; i = nodes.indexOf(p); return p; } return null; },
+-		nextSibling: function () { var s = this.currentNode.nextSibling; while (s && nodes.indexOf(s) < 0) s = s.nextSibling; if (s) { this.currentNode = s; i = nodes.indexOf(s); } return s; },
+-		detach: function () {}
+-	};
++	} finally { it._cand = null; }
++	return result;
+ }
+-method(DocP, 'createTreeWalker', function (root, what, filter) { return makeWalker(root, what, filter); });
+-method(DocP, 'createNodeIterator', function (root, what, filter) { return makeWalker(root, what, filter); });
++(function (P) {
++	accessor(P, 'root', function () { return this._root; });
++	accessor(P, 'referenceNode', function () { return this._ref; });
++	accessor(P, 'pointerBeforeReferenceNode', function () { return this._before; });
++	accessor(P, 'whatToShow', function () { return this._what; });
++	accessor(P, 'filter', function () { return this._filter; });
++	method(P, 'nextNode', function () { return niTraverse(this, true); });
++	method(P, 'previousNode', function () { return niTraverse(this, false); });
++	method(P, 'detach', function () {});
++})(NodeIteratorImpl.prototype);
++/* the spec's "NodeIterator pre-removing steps" for one (node, before) pointer */
++function niAdjust(root, ptr, gone) {
++	if (gone === root || !rgIncAncestor(gone, ptr.node)) return;
++	if (ptr.before) {
++		var n = gone;
++		while (n && n !== root && !n.nextSibling) n = n.parentNode;
++		var next = n && n !== root ? n.nextSibling : null;
++		if (next) { ptr.node = next; return; }
++		ptr.before = false;
++	}
++	ptr.node = gone.previousSibling ? trLastDesc(gone.previousSibling) : gone.parentNode;
++}
++function niBeforeRemove(n) {
++	if (!liveIterators.length || !n || !n.parentNode) return;
++	var keep = [];
++	for (var i = 0; i < liveIterators.length; i++) {
++		var it = typeof WeakRef === 'function' ? liveIterators[i].deref() : liveIterators[i];
++		if (!it) continue;
++		keep.push(liveIterators[i]);
++		if (!rgIncAncestor(it._root, n)) continue;
++		var ptr = { node: it._ref, before: it._before };
++		niAdjust(it._root, ptr, n);
++		it._ref = ptr.node; it._before = ptr.before;
++		if (it._cand) niAdjust(it._root, it._cand, n);
++	}
++	liveIterators = keep;
++}
++function TreeWalkerImpl() { throw new TypeError('Illegal constructor'); }
++function makeTreeWalker(root, what, filter) {
++	var w = Object.create(TreeWalkerImpl.prototype);
++	w._root = root; w._what = what === undefined ? 0xFFFFFFFF : (what >>> 0); w._filter = filter === undefined ? null : filter;
++	w._cur = root; w._active = false;
++	return w;
++}
++function twChildren(w, first) {
++	var node = first ? w._cur.firstChild : w._cur.lastChild;
++	while (node) {
++		var r = trFilter(w, node);
++		if (r === 1) { w._cur = node; return node; }
++		if (r === 3) {
++			var c = first ? node.firstChild : node.lastChild;
++			if (c) { node = c; continue; }
++		}
++		while (node) {
++			var s = first ? node.nextSibling : node.previousSibling;
++			if (s) { node = s; break; }
++			var p = node.parentNode;
++			if (!p || p === w._root || p === w._cur) return null;
++			node = p;
++		}
++	}
++	return null;
++}
++function twSiblings(w, next) {
++	var node = w._cur;
++	if (node === w._root) return null;
++	while (true) {
++		var s = next ? node.nextSibling : node.previousSibling;
++		while (s) {
++			node = s;
++			var r = trFilter(w, node);
++			if (r === 1) { w._cur = node; return node; }
++			s = next ? node.firstChild : node.lastChild;
++			if (r === 2 || !s) s = next ? node.nextSibling : node.previousSibling;
++		}
++		node = node.parentNode;
++		if (!node || node === w._root) return null;
++		if (trFilter(w, node) === 1) return null;
++	}
++}
++(function (P) {
++	accessor(P, 'root', function () { return this._root; });
++	accessor(P, 'whatToShow', function () { return this._what; });
++	accessor(P, 'filter', function () { return this._filter; });
++	accessor(P, 'currentNode', function () { return this._cur; }, function (n) {
++		if (!n || typeof n.nodeType !== 'number') throw new TypeError('currentNode must be a Node');
++		this._cur = n;
++	});
++	method(P, 'parentNode', function () {
++		var node = this._cur;
++		while (node && node !== this._root) {
++			node = node.parentNode;
++			if (node && trFilter(this, node) === 1) { this._cur = node; return node; }
++		}
++		return null;
++	});
++	method(P, 'firstChild', function () { return twChildren(this, true); });
++	method(P, 'lastChild', function () { return twChildren(this, false); });
++	method(P, 'nextSibling', function () { return twSiblings(this, true); });
++	method(P, 'previousSibling', function () { return twSiblings(this, false); });
++	method(P, 'previousNode', function () {
++		var node = this._cur;
++		while (node !== this._root) {
++			var s = node.previousSibling;
++			while (s) {
++				node = s;
++				var r = trFilter(this, node);
++				while (r !== 2 && node.lastChild) { node = node.lastChild; r = trFilter(this, node); }
++				if (r === 1) { this._cur = node; return node; }
++				s = node.previousSibling;
++			}
++			if (node === this._root || !node.parentNode) return null;
++			node = node.parentNode;
++			if (trFilter(this, node) === 1) { this._cur = node; return node; }
++		}
++		return null;
++	});
++	method(P, 'nextNode', function () {
++		var node = this._cur, r = 1;
++		while (true) {
++			while (r !== 2 && node.firstChild) {
++				node = node.firstChild;
++				r = trFilter(this, node);
++				if (r === 1) { this._cur = node; return node; }
++			}
++			var sib = null, t = node;
++			while (t) {
++				if (t === this._root) return null;
++				sib = t.nextSibling;
++				if (sib) break;
++				t = t.parentNode;
++			}
++			if (!sib) return null;
++			node = sib;
++			r = trFilter(this, node);
++			if (r === 1) { this._cur = node; return node; }
++		}
++	});
++})(TreeWalkerImpl.prototype);
++global.NodeIterator = NodeIteratorImpl;
++global.TreeWalker = TreeWalkerImpl;
++method(DocP, 'createTreeWalker', function (root, what, filter) { return makeTreeWalker(root, what, filter); });
++method(DocP, 'createNodeIterator', function (root, what, filter) { return makeNodeIterator(root, what, filter); });
+ global.NodeFilter = { FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3, SHOW_ALL: 0xFFFFFFFF,
+ 	SHOW_ELEMENT: 1, SHOW_ATTRIBUTE: 2, SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8, SHOW_COMMENT: 128,
+ 	SHOW_DOCUMENT: 256, SHOW_DOCUMENT_TYPE: 512, SHOW_DOCUMENT_FRAGMENT: 1024 };
