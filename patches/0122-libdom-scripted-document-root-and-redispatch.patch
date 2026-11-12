@@ -1,0 +1,107 @@
+diff -ruN a/libdom/src/core/document.c b/libdom/src/core/document.c
+--- a/libdom/src/core/document.c
++++ b/libdom/src/core/document.c
+@@ -150,6 +150,7 @@
+ 		return err;
+ 	}
+ 	doc->quirks = DOM_DOCUMENT_QUIRKS_MODE_NONE;
++	doc->scripted = false;
+ 
+ 	err = dom_string_create_interned((const uint8_t *) "class",
+ 			SLEN("class"), &doc->class_string);
+@@ -1542,6 +1543,14 @@
+ /*-----------------------------------------------------------------------*/
+ /* Semi-internal API extensions for NetSurf */
+ 
++/* Phorepoc: mark a document a script built (createDocument, createHTMLDocument, a frame's contentDocument). No
++ * browser content lays it out, so the DOM rule that its root Element / DocumentType may be removed or replaced
++ * applies; the live rendered document keeps libdom's refusal. */
++void _dom_document_set_scripted(dom_document *doc)
++{
++	doc->scripted = true;
++}
++
+ dom_exception _dom_document_get_quirks_mode(dom_document *doc,
+ 		dom_document_quirks_mode *result)
+ {
+diff -ruN a/libdom/src/core/document.h b/libdom/src/core/document.h
+--- a/libdom/src/core/document.h
++++ b/libdom/src/core/document.h
+@@ -72,6 +72,7 @@
+ 	dom_string *_memo_domsubtreemodified; /**< DOMSubtreeModified */
+ 
+ 	uint32_t dispatching_mutation; /**< Mutation event semaphore */
++	bool scripted;	/**< built by script (no browser content): its root may be removed or replaced */
+ };
+ 
+ /* Create a DOM document */
+diff -ruN a/libdom/src/core/node.c b/libdom/src/core/node.c
+--- a/libdom/src/core/node.c
++++ b/libdom/src/core/node.c
+@@ -871,8 +871,8 @@
+ {
+ 	dom_node_internal *n;
+ 
+-	/* We don't support replacement of DocumentType or root Elements */
+-	if (node->type == DOM_DOCUMENT_NODE && 
++	/* We don't support replacement of DocumentType or root Elements (except in a script-built document) */
++	if (node->type == DOM_DOCUMENT_NODE && !((dom_document *) node)->scripted &&
+ 			(new_child->type == DOM_DOCUMENT_TYPE_NODE || 
+ 			new_child->type == DOM_ELEMENT_NODE))
+ 		return DOM_NOT_SUPPORTED_ERR;
+@@ -970,8 +970,8 @@
+ 	dom_exception err;
+ 	bool success = true;
+ 
+-	/* We don't support removal of DocumentType or root Element nodes */
+-	if (node->type == DOM_DOCUMENT_NODE &&
++	/* We don't support removal of DocumentType or root Element nodes (except in a script-built document) */
++	if (node->type == DOM_DOCUMENT_NODE && !((dom_document *) node)->scripted &&
+ 			(old_child->type == DOM_DOCUMENT_TYPE_NODE ||
+ 			old_child->type == DOM_ELEMENT_NODE))
+ 		return DOM_NOT_SUPPORTED_ERR;
+@@ -2499,6 +2499,7 @@
+ 	}
+ 
+ 	if (evt->type == NULL || dom_string_byte_length(evt->type) == 0) {
++		evt->in_dispatch = false;
+ 		return DOM_UNSPECIFIED_EVENT_TYPE_ERR;
+ 	}
+ 
+@@ -2506,6 +2507,7 @@
+ 	if (doc == NULL) {
+ 		/* TODO: In the progress of parsing, many Nodes in the DTD has
+ 		 * no document at all, do nothing for this kind of node */
++		evt->in_dispatch = false;
+ 		return DOM_NO_ERR;
+ 	}
+ 
+@@ -2639,6 +2641,8 @@
+ 	}
+ 
+ cleanup:
++	/* the dispatch flag is unset when dispatch ends (DOM): the same event object can be dispatched again */
++	evt->in_dispatch = false;
+ 	if (_event_is_mutation(doc, evt)) {
+ 		doc->dispatching_mutation--;
+ 	}
+diff -ruN a/netsurf/content/handlers/javascript/quickjs/qjs_native.c b/netsurf/content/handlers/javascript/quickjs/qjs_native.c
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_native.c
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_native.c
+@@ -868,6 +868,8 @@
+ 	return JS_NewBool(ctx, m);
+ }
+ 
++void _dom_document_set_scripted(dom_document *doc);	/* libdom core/document.c (patch 0122) */
++
+ /** __ns.parseDocument(html) -> Document (detached) */
+ static JSValue nat_parse_document(JSContext *ctx, JSValueConst this_val,
+ 		int argc, JSValueConst *argv)
+@@ -904,6 +906,7 @@
+ 	dom_hubbub_parser_completed(parser);
+ 	dom_hubbub_parser_destroy(parser);
+ 	JS_FreeCString(ctx, s);
++	_dom_document_set_scripted(doc);
+ 
+ 	ret = qjs_dom_wrap_node(t, (dom_node *)doc);
+ 	dom_node_unref(doc);
