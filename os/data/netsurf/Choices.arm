@@ -3,3 +3,4 @@ fb_face_sans_serif:z:/resource/fonts/s60sans_r.ttf
 fb_face_sans_serif_bold:z:/resource/fonts/s60sans_sb.ttf
 fb_face_monospace:z:/resource/fonts/UbuntuMono-Regular.ttf
 fb_face_monospace_bold:z:/resource/fonts/UbuntuMono-Bold.ttf
+fb_face_fallback:z:/resource/phweb/fonts/NotoSansArabic-Regular.ttf;z:/resource/phweb/fonts/NotoSansHebrew-Regular.ttf;z:/resource/phweb/fonts/NotoSansThai-Regular.ttf;z:/resource/phweb/fonts/NotoSansDevanagari-Regular.ttf;z:/resource/phweb/fonts/NotoSansCJKsc-Subset.otf
