@@ -1,0 +1,40 @@
+diff -ru a/netsurf/frontends/framebuffer/schedule.c b/netsurf/frontends/framebuffer/schedule.c
+--- a/netsurf/frontends/framebuffer/schedule.c	2026-11-16 04:11:15.385892600 +0000
++++ b/netsurf/frontends/framebuffer/schedule.c	2026-11-16 04:11:16.405674800 +0000
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include <time.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ 
+ #include "utils/sys_time.h"
+@@ -157,7 +158,27 @@
+                                 prev_nscb->next = unlnk_nscb->next;
+                         }
+ 
+-                        unlnk_nscb->callback(unlnk_nscb->p);
++                        {
++                                /* a callback that holds the engine thread for long (a whole page blocked the
++                                 * browser for 25 min) is named on the log: its address, resolved with the DLL's
++                                 * symbols */
++                                struct timeval t0, t1;
++                                long ms;
++                                extern void *volatile phns_cur_cb;
++                                gettimeofday(&t0, NULL);
++                                phns_cur_cb = (void *)unlnk_nscb->callback;
++                                unlnk_nscb->callback(unlnk_nscb->p);
++                                phns_cur_cb = NULL;
++                                gettimeofday(&t1, NULL);
++                                ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_usec - t0.tv_usec) / 1000L;
++                                if (ms >= 500) {
++                                        extern void phns_log(const char *msg);
++                                        char buf[96];
++                                        snprintf(buf, sizeof buf, "ns: slow callback %p took %ld ms",
++                                                 (void *)unlnk_nscb->callback, ms);
++                                        phns_log(buf);
++                                }
++                        }
+ 
+                         free(unlnk_nscb);
+ 

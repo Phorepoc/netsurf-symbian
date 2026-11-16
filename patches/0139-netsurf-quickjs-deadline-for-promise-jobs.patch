@@ -1,0 +1,43 @@
+--- a/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
++++ b/netsurf/content/handlers/javascript/quickjs/qjs_dom.c
+@@ -206,9 +206,20 @@
+ void qjs_run_jobs(JSContext *ctx)
+ {
+ 	JSContext *jctx;
++	struct jsthread *t = JS_GetContextOpaque(ctx);
++	bool armed = false;
+ 
++	/* promise jobs run script too: they get the script deadline when no
++	 * script armed one (a chain of jobs that queues the next one held the
++	 * engine thread for good) */
++	if (t != NULL && t->heap->deadline_ms == 0) {
++		qjs_deadline_start(t);
++		armed = true;
++	}
+ 	while (JS_ExecutePendingJob(JS_GetRuntime(ctx), &jctx) > 0)
+ 		;
++	if (armed)
++		qjs_deadline_stop(t);
+ }
+ 
+ /* call a helper function defined by the setup script */
+--- a/netsurf/content/handlers/javascript/quickjs/quickjs.c
++++ b/netsurf/content/handlers/javascript/quickjs/quickjs.c
+@@ -44,11 +44,17 @@
+ #define QJS_MEMORY_LIMIT (64 * 1024 * 1024)
+ 
++/* set by the frontend when the engine shuts down: every running script
++ * stops at once (a script that never ends kept the browser from closing) */
++volatile int qjs_abort_all;
++
+ /* abort long-running scripts via the runtime interrupt hook */
+ static int qjs_interrupt_handler(JSRuntime *rt, void *opaque)
+ {
+ 	struct jsheap *heap = opaque;
+ 	uint64_t now;
+ 
++	if (qjs_abort_all)
++		return 1;
+ 	if (heap->deadline_ms == 0)
+ 		return 0;
+ 	if (nsu_getmonotonic_ms(&now) != NSUERROR_OK)

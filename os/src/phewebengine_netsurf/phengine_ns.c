@@ -43,6 +43,7 @@
 #include "netsurf/misc.h"
 #include "netsurf/netsurf.h"
 #include "content/fetch.h"
+#include "content/hlcache.h"
 
 #include "framebuffer/framebuffer.h"
 #include "framebuffer/schedule.h"
@@ -71,6 +72,7 @@ struct gui_window {
 	nsfb_t *nsfb;
 	int w, h, sx, sy, cw, ch;
 	int loading, progress, sec, can_back, can_fwd, focus, dirty;
+	int new_content;   /* GW_EVENT_NEW_CONTENT seen: the next set_url is the commit (PHE_EV_COMMIT) */
 	const void *fowner;                            /* the focused field (patch 0114), to see a field-to-field move */
 	int down;
 	char url[1024], title[256], status[256], err[128];
@@ -181,6 +183,7 @@ static void enqueue(int type, PheView v, int a, int b, int c, char *s)
 	if (qtail) qtail->next = k; else qhead = k;
 	qtail = k;
 	pthread_mutex_unlock(&mu);
+	if (type == C_LOAD) trace("ns: queued load", s);
 }
 
 static struct gui_window *find(PheView v)
@@ -269,18 +272,45 @@ static nserror gw_event(struct gui_window *gw, enum gui_window_event ev)
 	case GW_EVENT_REMOVE_CARET:
 		if (gw->focus) { gw->focus = 0; post(gw, PHE_EV_FOCUS, 0, 0); }   /* fowner stays: NetSurf removes the caret after each press */
 		break;
+	/* NetSurf runs the throbber more than once per page (subresources, scripts after the load): a load is one START ...
+	 * one FINISHED. A START while loading or a FINISHED while idle was posted out of order (FINISHED, then START, for one
+	 * typed URL) and the frontend lost track of the load. */
 	case GW_EVENT_START_THROBBER:
-		pthread_mutex_lock(&mu); gw->loading = 1; gw->progress = 10; pthread_mutex_unlock(&mu);
-		post(gw, PHE_EV_START, 0, 0);
+		{
+		int was;
+		pthread_mutex_lock(&mu); was = gw->loading; gw->loading = 1; gw->progress = 10; pthread_mutex_unlock(&mu);
+		if (!was)
+			post(gw, PHE_EV_START, 0, 0);
 		post(gw, PHE_EV_PROGRESS, 10, 0);
+		}
 		break;
 	case GW_EVENT_STOP_THROBBER:
+		{
+		int was;
 		update_extent(gw);
-		pthread_mutex_lock(&mu); gw->loading = 0; gw->progress = 100; pthread_mutex_unlock(&mu);
+		pthread_mutex_lock(&mu); was = gw->loading; gw->loading = 0; gw->progress = 100; pthread_mutex_unlock(&mu);
 		gw->dirty = 1;
 		refresh_state(gw);
 		post(gw, PHE_EV_HISTORY, 0, 0);
-		post(gw, PHE_EV_FINISHED, 0, 0);
+		if (was)
+			post(gw, PHE_EV_FINISHED, 0, 0);
+		}
+		break;
+	case GW_EVENT_NEW_CONTENT:   /* the new document is current; NetSurf sets its URL next (browser_window_content_ready) */
+		{
+		/* a fetch that failed (DNS, connect, TLS) becomes NetSurf's internal page about:query/fetcherror, an internal
+		 * navigation without a URL of its own: the load FAILED, not a page (the frontend's error page offers Reload) */
+		hlcache_handle *c = gw->bw ? browser_window_get_content(gw->bw) : NULL;
+		nsurl *u = c ? hlcache_handle_get_url(c) : NULL;
+		if (u && strncmp(nsurl_access(u), "about:query/fetcherror", 22) == 0) {
+			pthread_mutex_lock(&mu);
+			strncpy(gw->err, "The page could not be fetched (network or secure connection error)", sizeof gw->err - 1);
+			gw->err[sizeof gw->err - 1] = 0;
+			pthread_mutex_unlock(&mu);
+			post(gw, PHE_EV_FAILED, -1, 0);
+		} else
+			gw->new_content = 1;
+		}
 		break;
 	default: break;
 	}
@@ -301,7 +331,12 @@ static nserror gw_set_url(struct gui_window *gw, struct nsurl *url)
 	gw->title[0] = 0;
 	pthread_mutex_unlock(&mu);
 	refresh_state(gw);
-	post(gw, PHE_EV_COMMIT, 0, gw->sec);
+	/* NetSurf also sets the URL when a navigation starts and on each redirect (the address bar's text): only the URL of the
+	 * new document is the commit -- before, COMMIT came 0 ms after START, with the old page still showing */
+	if (gw->new_content) {
+		gw->new_content = 0;
+		post(gw, PHE_EV_COMMIT, 0, gw->sec);
+	}
 	return NSERROR_OK;
 }
 static void gw_set_status(struct gui_window *gw, const char *t)
@@ -523,12 +558,56 @@ void phns_install_fault_logger(void);
 void phns_heap_tick(int live, int sessions, int keys, int keypool);   /* phewebengine_netsurf.cpp: bounded heap log line */
 extern int phns_tls_live, phns_tls_sessions;  /* content/fetchers/curl.c (patch 0106) */
 int phns_psa_keys(int *pool);                  /* content/fetchers/curl.c (patch 0106) */
+/* a step of the engine loop that holds the thread for long goes to the log (schedule.c names slow callbacks: patch 0138) */
+static struct timeval slow_start;
+static void slow_t0(void) { gettimeofday(&slow_start, NULL); }
+static void slow_check(const char *what, int n)
+{
+	struct timeval t;
+	long ms;
+	gettimeofday(&t, NULL);
+	ms = (t.tv_sec - slow_start.tv_sec) * 1000L + (t.tv_usec - slow_start.tv_usec) / 1000L;
+	if (ms >= 500) {
+		char buf[80];
+		snprintf(buf, sizeof buf, "ns: slow %s (%d) took %ld ms", what, n, ms);
+		phns_log(buf);
+	}
+}
+/* the engine thread's progress, watched by a second thread: a step that never returns is named while it still holds the
+ * thread (slow_check only reports once a step comes back) */
+void *volatile phns_cur_cb;                     /* schedule.c (patch 0138): the callback running now */
+static volatile unsigned loop_count;
+static volatile int exited;
+static volatile const char *loop_stage = "start";
+static volatile int loop_arg;
+static pthread_t wthr;
+static int wthr_up;
+static void *watch_main(void *arg)
+{
+	unsigned seen = 0;
+	int ticks = 0, still = 0;
+	(void)arg;
+	while (!quitting) {              /* 100 ms steps: e_shutdown joins this thread before the DLL goes */
+		usleep(100000);
+		if (++ticks < 50) continue;
+		ticks = 0;
+		if (loop_count != seen) { seen = loop_count; still = 0; continue; }
+		if (++still % 2 == 0) {          /* every 10 s while stuck */
+			char buf[120];
+			snprintf(buf, sizeof buf, "ns: engine stuck %d s in %s (%d) callback %p", still * 5,
+				(const char *)loop_stage, loop_arg, phns_cur_cb);
+			phns_log(buf);
+		}
+	}
+	return NULL;
+}
 static void *engine_main(void *arg)
 {
 	(void)arg;
 	phns_install_fault_logger();
 	initerr = ns_start();
 	ready = 1;
+	wthr_up = pthread_create(&wthr, NULL, watch_main, NULL) == 0;
 	while (!quitting && initerr == 0) {
 		struct cmd *k;
 		int t, i, busy = 0;
@@ -538,21 +617,28 @@ static void *engine_main(void *arg)
 			if (k) { qhead = k->next; if (!qhead) qtail = NULL; }
 			pthread_mutex_unlock(&mu);
 			if (!k) break;
+			loop_stage = "command"; loop_arg = k->type;
+			slow_t0();
 			do_cmd(k);
+			slow_check("command", k->type);
 			free(k->s); free(k);
 		}
+		loop_stage = "schedule"; loop_arg = 0;
 		t = schedule_run();
 		{ int pool, keys = phns_psa_keys(&pool); phns_heap_tick(phns_tls_live, phns_tls_sessions, keys, pool); }
 		for (i = 0; i < MAXV; i++)
 			if (views[i].used) {
 				if (views[i].loading) busy = 1;
-				if (views[i].dirty && views[i].nsfb) { update_extent(&views[i]); redraw(&views[i]); }
+				if (views[i].dirty && views[i].nsfb) { loop_stage = "redraw"; loop_arg = i; slow_t0(); update_extent(&views[i]); redraw(&views[i]); slow_check("redraw", i); }
 			}
 		if (t < 0 || t > (busy ? 15 : 40)) t = busy ? 15 : 40;
 		if (t < 2) t = 2;
+		loop_stage = "sleep"; loop_arg = t;
 		usleep((useconds_t)t * 1000);
+		loop_count++;
 	}
 	trace("ns: engine thread exits", NULL);
+	exited = 1;
 	return NULL;
 }
 
@@ -583,7 +669,36 @@ static int e_init(PheNotify n, void *ctx)
 	trace("ns: e_init returns", ready && !initerr ? "0" : "FAIL");
 	return (ready && !initerr) ? 0 : -2;
 }
-static void e_shutdown(void) { quitting = 1; pthread_join(thr, NULL); ready = 0; }
+#ifdef PHE_NS_QJS
+extern volatile int qjs_abort_all;              /* quickjs.c (patch 0139): stops every running script */
+#endif
+/* the browser closes (or switches engines) through here: a step that does not come back must not hold it for good. Running
+ * script is stopped at once; a thread still busy after 15 s is left behind with a log line instead of joined forever */
+static void e_shutdown(void)
+{
+	struct timeval t0, t;
+	quitting = 1;
+#ifdef PHE_NS_QJS
+	qjs_abort_all = 1;
+#endif
+	gettimeofday(&t0, NULL);
+	while (!exited) {
+		usleep(10000);
+		gettimeofday(&t, NULL);
+		if ((t.tv_sec - t0.tv_sec) * 1000000L + (t.tv_usec - t0.tv_usec) > 15000000L) break;
+	}
+	if (exited)
+		pthread_join(thr, NULL);
+	else {
+		char buf[100];
+		snprintf(buf, sizeof buf, "ns: engine thread did not stop (stuck in %s, callback %p)", (const char *)loop_stage,
+			phns_cur_cb);
+		phns_log(buf);
+		pthread_detach(thr);
+	}
+	if (wthr_up) { pthread_join(wthr, NULL); wthr_up = 0; }
+	ready = 0;
+}
 static void e_set_iap(const char *name) { strncpy(iapname, name ? name : "", sizeof iapname - 1); }
 static void e_memory_pressure(int level) { (void)level; }
 static void e_set_ua(const unsigned short *s, int len) { (void)s; (void)len; }
