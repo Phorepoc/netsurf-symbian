@@ -41,12 +41,15 @@ if [ "${APT:-1}" = 1 ] && ! { command -v gperf && command -v bison && command -v
     command -v pkg-config >/dev/null || { echo "apt: gperf/flex/bison/pkg-config not installed -- stop"; exit 1; }
 fi
 
-if [ ! -f "$SRC/.patched" ]; then
+# .patched holds the hash of the patch set it was made with: a patch added or changed since unpacks the tree again (a bare
+# marker kept a new patch out of every later local build)
+PSET=$(cat "$NSS"/patches/*.patch | sha256sum | cut -d' ' -f1)
+if [ "$(cat "$SRC/.patched" 2>/dev/null)" != "$PSET" ]; then
     unpack netsurf "$SRC" || exit 1
     for p in "$NSS"/patches/*.patch; do
         patch -s -p1 -d "$SRC" < "$p" || { echo "patch FAILED: $(basename "$p")"; exit 1; }
     done
-    touch "$SRC/.patched"
+    echo "$PSET" > "$SRC/.patched"
 fi
 mkdir -p "$WORK"
 NSSHARED=$SRC/buildsystem
