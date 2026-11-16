@@ -1,0 +1,64 @@
+diff -ru a/netsurf/content/handlers/javascript/quickjs/runtime.js b/netsurf/content/handlers/javascript/quickjs/runtime.js
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js	2026-11-16 10:19:50.028330400 +0000
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js	2026-11-16 10:19:50.066621400 +0000
+@@ -1276,9 +1276,12 @@
+ 	location.href = u + (q ? '?' + q : '');
+ }
+ 
+-accessor(ElementP, 'shadowRoot', function () { return null; });
+-method(ElementP, 'attachShadow', function () {
+-	/* no shadow DOM: content renders in the light tree */
++/* no shadow DOM: content renders in the light tree, and an open "shadow root" is the element itself */
++var shadowHosts = new WeakMap();
++accessor(ElementP, 'shadowRoot', function () { return shadowHosts.get(this) === 'open' ? this : null; });
++method(ElementP, 'attachShadow', function (init) {
++	if (shadowHosts.has(this)) throw DOMException('the element already has a shadow root', 'NotSupportedError');
++	shadowHosts.set(this, init && init.mode === 'closed' ? 'closed' : 'open');
+ 	return this;
+ });
+ method(ElementP, 'animate', function () {
+@@ -4023,7 +4026,43 @@
+ 	registerProperty: function () {},
+ 	px: function (n) { return n + 'px'; }
+ };
+-global.CSSStyleSheet = function () { this.cssRules = []; this.replaceSync = this.replace = function () { return Promise.resolve(this); }; this.insertRule = function () { return 0; }; };
++/* Constructable style sheets: the text is kept, and a sheet adopted by the document or an element (attachShadow gives the
++ * element itself, so shadow-root sheets land here too) is applied as a <style> in the document head -- unscoped, as
++ * everything of a "shadow root" is */
++function CSSStyleSheet() {
++	this.cssRules = [];
++	this._text = '';
++	this._style = null;
++}
++CSSStyleSheet.prototype.replaceSync = function (text) {
++	this._text = String(text);
++	if (this._style) this._style.textContent = this._text;
++};
++CSSStyleSheet.prototype.replace = function (text) { this.replaceSync(text); return Promise.resolve(this); };
++CSSStyleSheet.prototype.insertRule = function (rule, i) {
++	this.replaceSync(this._text + '\n' + rule);
++	return i || 0;
++};
++CSSStyleSheet.prototype.deleteRule = function () {};
++global.CSSStyleSheet = CSSStyleSheet;
++var adopted = new WeakMap();
++function getAdopted() { return adopted.get(this) || []; }
++function setAdopted(list) {
++	var a = [];
++	for (var i = 0; list && i < list.length; i++) {
++		var sh = list[i];
++		if (!(sh instanceof CSSStyleSheet)) throw new TypeError('adoptedStyleSheets: not a CSSStyleSheet');
++		a.push(sh);
++		if (!sh._style && document.head) {
++			sh._style = document.createElement('style');
++			sh._style.textContent = sh._text;
++			document.head.appendChild(sh._style);
++		}
++	}
++	adopted.set(this, a);
++}
++accessor(DocP, 'adoptedStyleSheets', getAdopted, setAdopted);
++accessor(ElementP, 'adoptedStyleSheets', getAdopted, setAdopted);
+ global.visualViewport = new EventTarget();
+ Object.defineProperties(global.visualViewport, {
+ 	width: { get: function () { return innerWidth; } }, height: { get: function () { return innerHeight; } },

@@ -1,0 +1,180 @@
+diff -ru a/netsurf/content/handlers/javascript/quickjs/runtime.js b/netsurf/content/handlers/javascript/quickjs/runtime.js
+--- a/netsurf/content/handlers/javascript/quickjs/runtime.js	2026-11-16 09:37:45.531276000 +0000
++++ b/netsurf/content/handlers/javascript/quickjs/runtime.js	2026-11-16 10:19:48.045104800 +0000
+@@ -2939,15 +2939,7 @@
+ global.Worker = function () { throw new Error('Web Workers are not supported'); };
+ global.SharedWorker = global.Worker;
+ 
+-/* Custom elements: definitions are recorded; elements are not upgraded */
+-var ceRegistry = {};
+-global.customElements = {
+-	define: function (name, cls) { ceRegistry[name] = cls; },
+-	get: function (name) { return ceRegistry[name]; },
+-	getName: function (cls) { for (var k in ceRegistry) if (ceRegistry[k] === cls) return k; return null; },
+-	whenDefined: function (name) { return ceRegistry[name] ? Promise.resolve(ceRegistry[name]) : new Promise(function () {}); },
+-	upgrade: function () {}
+-};
++/* Custom elements: at the end (they wrap the DOM mutators and createElement) */
+ 
+ /* HTMLxxxElement interface objects for instanceof checks */
+ var HTML_KNOWN = new RegExp('^(' + ('a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption cite code ' +
+@@ -4295,4 +4287,159 @@
+ 	return { display: s || d, position: (el.style && el.style.position) || 'static', visibility: 'visible' };
+ }
+ 
++
++/* Custom elements: elements of a defined name are upgraded -- the class's prototype, its constructor run on the element (the
++ * HTMLElement base constructor hands back the element being upgraded, as the spec's construction stack does), then
++ * attributeChangedCallback for its observed attributes and connectedCallback when it is in the document. Upgrades happen when
++ * the name is defined, when such elements are created or inserted, and once the document is parsed. Removal calls
++ * disconnectedCallback; setAttribute / removeAttribute call attributeChangedCallback. */
++(function () {
++	var reg = {}, byClass = new Map(), waiting = {}, upgrading = null, names = [];
++	var BaseHTMLElement = global.HTMLElement;
++	var C = function HTMLElement() {
++		if (upgrading) { var e = upgrading; upgrading = null; return e; }
++		var name = new.target ? byClass.get(new.target) : undefined;
++		if (name === undefined) throw new TypeError('Illegal constructor');
++		var el = baseCreate.call(document, name);   // `new MyElement()`: a new element of its name
++		Object.setPrototypeOf(el, new.target.prototype);
++		el.__ce_state = 1;
++		return el;
++	};
++	C.prototype = BaseHTMLElement.prototype;
++	def(C, Symbol.hasInstance, { value: BaseHTMLElement[Symbol.hasInstance] });
++	global.HTMLElement = C;
++
++	function cbk(el, n, args) {
++		var f = el[n];
++		if (typeof f === 'function') try { f.apply(el, args || []); } catch (e) { reportError(e); }
++	}
++	function upgrade(el) {
++		if (!el || el.nodeType !== 1 || el.__ce_state) return;
++		var name = String(el.localName || el.tagName || '').toLowerCase(), cls = reg[name];
++		if (!cls) return;
++		el.__ce_state = 2;   // being constructed: no callbacks yet
++		try {
++			Object.setPrototypeOf(el, cls.prototype);
++			upgrading = el;
++			var r = new cls();
++			upgrading = null;
++			if (r !== el) { el.__ce_state = 3; return; }   // 3: failed, not tried again (as the spec's "failed" state)
++		} catch (e) { upgrading = null; el.__ce_state = 3; reportError(e); return; }
++		el.__ce_state = 1;
++		var obs = cls.observedAttributes;
++		if (obs && obs.length) for (var i = 0; i < obs.length; i++) {
++			var v = el.getAttribute(obs[i]);
++			if (v !== null) cbk(el, 'attributeChangedCallback', [obs[i], null, v, null]);
++		}
++		connected(el);
++	}
++	// connectedCallback / disconnectedCallback only on a change (__ce_conn): a callback that moves or re-renders its own
++	// element must not call itself again
++	function connected(el) {
++		if (el.__ce_state !== 1 || el.__ce_conn || !el.isConnected) return;
++		el.__ce_conn = true;
++		cbk(el, 'connectedCallback');
++	}
++	function subtree(n) {
++		var list = [];
++		if (n.nodeType === 1) list.push(n);
++		if (n.querySelectorAll) { var q = n.querySelectorAll(names.join(',')); for (var i = 0; i < q.length; i++) list.push(q[i]); }
++		return list;
++	}
++	// n and its descendants: undefined ones upgraded, defined ones told they are connected
++	function inserted(n) {
++		if (!n || !names.length) return;
++		subtree(n).forEach(function (el) {
++			if (!el.__ce_state) upgrade(el);
++			else connected(el);
++		});
++	}
++	function removed(n) {
++		if (!n || !names.length || n.isConnected) return;
++		subtree(n).forEach(function (el) {
++			if (el.__ce_state !== 1 || !el.__ce_conn) return;
++			el.__ce_conn = false;
++			cbk(el, 'disconnectedCallback');
++		});
++	}
++	function sweep() { if (names.length) inserted(document.documentElement); }
++
++	global.customElements = {
++		define: function (name, cls) {
++			name = String(name).toLowerCase();
++			if (typeof cls !== 'function') throw new TypeError('not a constructor');
++			if (!/^[a-z][a-z0-9._]*-[a-z0-9._-]*$/.test(name)) throw DOMException("'" + name + "' is not a valid custom element name", 'SyntaxError');
++			if (reg[name] || byClass.has(cls)) throw DOMException("'" + name + "' is already defined", 'NotSupportedError');
++			reg[name] = cls; byClass.set(cls, name); names.push(name);
++			sweep();
++			if (waiting[name]) { waiting[name].forEach(function (r) { r(cls); }); delete waiting[name]; }
++		},
++		get: function (name) { return reg[String(name).toLowerCase()]; },
++		getName: function (cls) { var n = byClass.get(cls); return n === undefined ? null : n; },
++		whenDefined: function (name) {
++			name = String(name).toLowerCase();
++			if (reg[name]) return Promise.resolve(reg[name]);
++			return new Promise(function (r) { (waiting[name] = waiting[name] || []).push(r); });
++		},
++		upgrade: function (root) { inserted(root); }
++	};
++	global.CustomElementRegistry = function () { throw new TypeError('Illegal constructor'); };
++
++	var baseCreate = DocP.createElement;
++	method(DocP, 'createElement', function (n) {
++		var el = baseCreate.apply(this, arguments);
++		if (names.length) upgrade(el);
++		return el;
++	});
++	[NodeP, ElementP, DocP].forEach(function (P) {
++		wrapMutator(P, 'appendChild', function (orig, args) {
++			var kids = fragKids(args[0]), r = orig.apply(this, args);
++			kids.forEach(inserted);
++			return r;
++		});
++		wrapMutator(P, 'insertBefore', function (orig, args) {
++			var kids = fragKids(args[0]), r = orig.apply(this, args);
++			kids.forEach(inserted);
++			return r;
++		});
++		wrapMutator(P, 'replaceChild', function (orig, args) {
++			var kids = fragKids(args[0]), r = orig.apply(this, args);
++			removed(args[1]);
++			kids.forEach(inserted);
++			return r;
++		});
++		wrapMutator(P, 'removeChild', function (orig, args) {
++			var r = orig.apply(this, args);
++			removed(args[0]);
++			return r;
++		});
++	});
++	var ih = Object.getOwnPropertyDescriptor(ElementP, 'innerHTML');
++	if (ih && ih.set)
++		accessor(ElementP, 'innerHTML', ih.get, function (v) {
++			ih.set.call(this, v);
++			if (names.length) for (var c = this.firstChild; c; c = c.nextSibling) inserted(c);
++		});
++	function attrChanged(el, name, old) {
++		if (!el.__ce_state || el.__ce_state !== 1) return;
++		var cls = el.constructor, obs = byClass.has(cls) && cls.observedAttributes;
++		if (!obs || obs.indexOf(name) < 0) return;
++		cbk(el, 'attributeChangedCallback', [name, old, el.getAttribute(name), null]);
++	}
++	wrapMutator(ElementP, 'setAttribute', function (orig, args) {
++		var name = String(args[0]).toLowerCase(), old = this.__ce_state ? this.getAttribute(name) : null;
++		var r = orig.apply(this, args);
++		if (this.__ce_state) attrChanged(this, name, old);
++		return r;
++	});
++	wrapMutator(ElementP, 'removeAttribute', function (orig, args) {
++		var name = String(args[0]).toLowerCase(), old = this.__ce_state ? this.getAttribute(name) : null;
++		var r = orig.apply(this, args);
++		if (this.__ce_state && old !== null) attrChanged(this, name, old);
++		return r;
++	});
++	// elements the parser made after a define (scripts that ran early)
++	if (document.addEventListener) document.addEventListener('DOMContentLoaded', sweep);
++	if (global.addEventListener) global.addEventListener('load', sweep);
++})();
+ })(globalThis);

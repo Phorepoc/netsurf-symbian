@@ -61,6 +61,7 @@ extern bool fb_font_init(void);
 #define MAXV 8
 #define RESDIR "/resource/phenetsurf/"
 #define LOGFILE "C:\\data\\phenetsurf.log"
+static int phns_jslog_count;   /* script log lines sent to the serial log for the current page (render_log) */
 
 extern void phns_log(const char *msg);            /* RDebug (phewebengine_netsurf.cpp) */
 extern char **respaths;
@@ -302,6 +303,7 @@ static nserror gw_event(struct gui_window *gw, enum gui_window_event ev)
 		break;
 	case GW_EVENT_NEW_CONTENT:   /* the new document is current; NetSurf sets its URL next (browser_window_content_ready) */
 		{
+		phns_jslog_count = 0;
 		/* a fetch that failed (DNS, connect, TLS) becomes NetSurf's internal page about:query/fetcherror, an internal
 		 * navigation without a URL of its own: the load FAILED, not a page (the frontend's error page offers Reload) */
 		hlcache_handle *c = gw->bw ? browser_window_get_content(gw->bw) : NULL;
@@ -572,6 +574,23 @@ static nserror set_defaults(struct nsoption_s *defaults)
 }
 
 static bool nslog_stream_configure(FILE *f) { setbuf(f, NULL); return true; }
+/* NetSurf's log goes to LOGFILE as before; a page's script errors and console output also reach the serial log, the first
+ * JSLOG_MAX of each page (phns_jslog_count is reset when a load starts) */
+#define JSLOG_MAX 40
+static void render_log(void *c, nslog_entry_context_t *ctx, const char *fmt, va_list args)
+{
+	char buf[300];
+	va_list a2;
+	(void)c;
+	va_copy(a2, args);
+	vsnprintf(buf, sizeof buf, fmt, a2);
+	va_end(a2);
+	fprintf(stderr, "[%s %.*s] %.*s:%i: %s\n", nslog_short_level_name(ctx->level), ctx->category->namelen,
+		ctx->category->name, ctx->filenamelen, ctx->filename, ctx->lineno, buf);
+	if ((strcmp(ctx->category->name, "jserrors") == 0 || strncmp(buf, "js console: ", 12) == 0)
+	    && phns_jslog_count++ < JSLOG_MAX)
+		trace("ns: js", buf);
+}
 
 /* ---- engine thread: init -------------------------------------------------------------------------------------------------- */
 static char resroot[8];
@@ -622,6 +641,7 @@ static int ns_start(void)
 	if (netsurf_register(&tbl) != NSERROR_OK) { trace("ns: register failed", NULL); return -1; }
 	respaths = fb_init_resource_path(RESDIR);
 	nslog_init(nslog_stream_configure, &argc, argv);
+	nslog_set_render_callback(render_log, NULL);
 	if (nsoption_init(set_defaults, &nsoptions, &nsoptions_default) != NSERROR_OK) { trace("ns: options failed", NULL); return -1; }
 	opts = filepath_find(respaths, "Choices");
 	nsoption_read(opts, nsoptions);
@@ -641,6 +661,7 @@ static void do_load(struct gui_window *g, const char *url)
 {
 	nsurl *u;
 	nserror e = nsurl_create(url, &u);
+	phns_jslog_count = 0;
 	if (e != NSERROR_OK) { trace("ns: bad url", url); return; }
 	if (!g->bw) {
 		creating = g;
