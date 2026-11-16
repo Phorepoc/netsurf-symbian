@@ -44,6 +44,8 @@
 #include "netsurf/netsurf.h"
 #include "content/fetch.h"
 #include "content/hlcache.h"
+#include "netsurf/download.h"
+#include "desktop/download.h"
 
 #include "framebuffer/framebuffer.h"
 #include "framebuffer/schedule.h"
@@ -76,6 +78,7 @@ struct gui_window {
 	const void *fowner;                            /* the focused field (patch 0114), to see a field-to-field move */
 	int down;
 	char url[1024], title[256], status[256], err[128];
+	char dl_url[1024], dl_name[256], dl_mime[96];   /* the download last announced (PHE_EV_DOWNLOAD) */
 	char fval[1024];                               /* PHE_STR_FOCUS_VALUE: the focused text field (never a password) */
 };
 
@@ -94,23 +97,24 @@ static PheView nextid = 1;
 static PheEvent evq[256];
 static int evh, evt;
 
-static void post(struct gui_window *g, int kind, int a, int b)
+static void post_id(PheView view, int kind, int a, int b, unsigned id)
 {
 	int merged = 0;
 	pthread_mutex_lock(&mu);
-	if (kind == PHE_EV_REPAINT || kind == PHE_EV_PROGRESS) {      /* coalesce */
+	if (kind == PHE_EV_REPAINT || kind == PHE_EV_PROGRESS || kind == PHE_EV_DOWNLOAD_PROGRESS) {      /* coalesce */
 		int i;
 		for (i = evh; i != evt; i = (i + 1) & 255)
-			if (evq[i].kind == kind && evq[i].view == g->id) { evq[i].a = a; evq[i].b = b; merged = 1; break; }
+			if (evq[i].kind == kind && evq[i].view == view && evq[i].id == id) { evq[i].a = a; evq[i].b = b; merged = 1; break; }
 	}
 	if (!merged && ((evt + 1) & 255) != evh) {
-		evq[evt].kind = kind; evq[evt].view = g->id; evq[evt].a = a; evq[evt].b = b; evq[evt].id = 0;
+		evq[evt].kind = kind; evq[evt].view = view; evq[evt].a = a; evq[evt].b = b; evq[evt].id = id;
 		evt = (evt + 1) & 255;
 	}
 	pthread_mutex_unlock(&mu);
 	if (notify_fn)
-		notify_fn(notify_ctx, g->id);
+		notify_fn(notify_ctx, view);
 }
+static void post(struct gui_window *g, int kind, int a, int b) { post_id(g->id, kind, a, b, 0); }
 
 static void trace(const char *a, const char *b)
 {
@@ -170,7 +174,7 @@ static int u8to16(const char *s, unsigned short *out, int cap)   /* returns the 
 }
 
 /* ---- command queue (UI thread -> engine thread) -------------------------------------------------------------------------- */
-enum { C_DESTROY, C_RESIZE, C_LOAD, C_CMD, C_SCROLL, C_PTR, C_TEXT, C_KEY, C_ZOOM, C_SETFIELD };
+enum { C_DESTROY, C_RESIZE, C_LOAD, C_CMD, C_SCROLL, C_PTR, C_TEXT, C_KEY, C_ZOOM, C_SETFIELD, C_DL_ACCEPT, C_DL_CANCEL };
 struct cmd { struct cmd *next; int type; PheView v; int a, b, c; char *s; };
 static struct cmd *qhead, *qtail;
 
@@ -378,6 +382,173 @@ static void gw_place_caret(struct gui_window *gw, int x, int y, int h, const str
 	post(gw, PHE_EV_FOCUS, 2, pw);                     /* b = 1: a password field (a masked editor) */
 }
 
+/* ---- downloads (PHE_CAP_DOWNLOAD) ----------------------------------------------------------------------------------------
+ * NetSurf turns a link to content it does not show (or one sent as an attachment) into a download context and hands us the
+ * data as it arrives. The frontend owns the destination: PHE_EV_DOWNLOAD asks, download_accept answers with a path. Data
+ * that comes before the answer is kept in memory and written out on accept; the answer normally comes within a frame. */
+#define DL_MAX_EARLY (64 * 1024 * 1024)   /* bytes held while no path is known: more and the download stops */
+struct gui_download_window {
+	struct gui_download_window *next;
+	download_context *ctx;
+	PheView view;
+	unsigned id;
+	FILE *fh;                     /* open once accepted */
+	char *path;                   /* where it goes (removed again when the download fails) */
+	char *early;                  /* data before the accept */
+	size_t elen, ecap;
+	unsigned long long got, total;
+	int accepted, finished, failed, lastpct, ending;
+};
+static struct gui_download_window *dls;
+static unsigned next_dl = 1;
+
+static void dl_end_cb(void *p);
+static void dl_free(struct gui_download_window *d)
+{
+	struct gui_download_window **pp;
+	for (pp = &dls; *pp; pp = &(*pp)->next)
+		if (*pp == d) { *pp = d->next; break; }
+	framebuffer_schedule(-1, dl_end_cb, d);
+	if (d->fh) fclose(d->fh);
+	free(d->path);
+	free(d->early);
+	if (d->ctx) download_context_destroy(d->ctx);
+	free(d);
+}
+static void dl_progress(struct gui_download_window *d)
+{
+	int pct = d->total ? (int)(d->got * 100 / d->total) : -1;
+	if (pct != d->lastpct || pct < 0) {
+		d->lastpct = pct;
+		post_id(d->view, PHE_EV_DOWNLOAD_PROGRESS, pct, (int)(d->got >> 10), d->id);
+	}
+}
+/* the end, once both are known (the transfer ended, the frontend answered): from the scheduler, not from inside the cache
+ * callback that reported it -- download_context_destroy releases the handle that callback runs on */
+static void dl_end_cb(void *p)
+{
+	struct gui_download_window *d = p;
+	int err = d->failed;
+	if (d->fh && fclose(d->fh) != 0 && !err) err = -1;
+	d->fh = NULL;
+	if (err && d->path) remove(d->path);
+	post_id(d->view, PHE_EV_DOWNLOAD_DONE, err, 0, d->id);
+	dl_free(d);
+}
+static void dl_finish(struct gui_download_window *d)
+{
+	if (!d->accepted || !d->finished || d->ending) return;
+	d->ending = 1;
+	framebuffer_schedule(0, dl_end_cb, d);
+}
+extern char phns_dl_hint_url[1024], phns_dl_hint_name[256];   /* <a download="name"> (patch 0140) */
+static struct gui_download_window *dl_create(download_context *ctx, struct gui_window *parent)
+{
+	struct gui_download_window *d;
+	const char *name = download_context_get_filename(ctx), *mime = download_context_get_mime_type(ctx);
+	nsurl *u = download_context_get_url(ctx);
+	if (u && phns_dl_hint_url[0] && strcmp(phns_dl_hint_url, nsurl_access(u)) == 0) {
+		if (phns_dl_hint_name[0] && !strchr(phns_dl_hint_name, '/')) name = phns_dl_hint_name;
+		phns_dl_hint_url[0] = 0;
+	}
+	if (!parent) return NULL;
+	d = calloc(1, sizeof *d);
+	if (!d) return NULL;
+	d->ctx = ctx; d->view = parent->id; d->id = next_dl++; d->lastpct = -2;
+	d->total = download_context_get_total_length(ctx);
+	d->next = dls; dls = d;
+	pthread_mutex_lock(&mu);
+	strncpy(parent->dl_url, u ? nsurl_access(u) : "", sizeof parent->dl_url - 1);
+	parent->dl_url[sizeof parent->dl_url - 1] = 0;
+	strncpy(parent->dl_name, name ? name : "", sizeof parent->dl_name - 1);
+	parent->dl_name[sizeof parent->dl_name - 1] = 0;
+	strncpy(parent->dl_mime, mime ? mime : "", sizeof parent->dl_mime - 1);
+	parent->dl_mime[sizeof parent->dl_mime - 1] = 0;
+	pthread_mutex_unlock(&mu);
+	trace("ns: download", parent->dl_url);
+	post_id(d->view, PHE_EV_DOWNLOAD, 0, 0, d->id);
+	return d;
+}
+static nserror dl_data(struct gui_download_window *d, const char *data, unsigned int size)
+{
+	/* an error here makes the core abort the fetch, and nothing follows an abort: the download ends from here */
+	if (d->failed) return NSERROR_SAVE_FAILED;
+	if (d->fh) {
+		if (fwrite(data, 1, size, d->fh) != size) goto fail;
+	} else {
+		if (d->elen + size > DL_MAX_EARLY) goto fail;
+		if (d->elen + size > d->ecap) {
+			size_t n = d->ecap ? d->ecap : 65536;
+			char *p;
+			while (n < d->elen + size) n *= 2;
+			if (!(p = realloc(d->early, n))) goto fail;
+			d->early = p; d->ecap = n;
+		}
+		memcpy(d->early + d->elen, data, size);
+		d->elen += size;
+	}
+	d->got += size;
+	dl_progress(d);
+	return NSERROR_OK;
+fail:
+	d->failed = -1;
+	d->finished = 1;
+	dl_finish(d);
+	return NSERROR_SAVE_FAILED;
+}
+static void dl_error(struct gui_download_window *d, const char *msg)
+{
+	trace("ns: download failed", msg);
+	if (!d->failed) d->failed = -1;
+	d->finished = 1;
+	dl_finish(d);
+}
+static void dl_done(struct gui_download_window *d)
+{
+	d->finished = 1;
+	dl_finish(d);
+}
+static struct gui_download_table download_table = { .create = dl_create, .data = dl_data, .error = dl_error, .done = dl_done };
+
+static struct gui_download_window *dl_find(unsigned id)
+{
+	struct gui_download_window *d;
+	for (d = dls; d; d = d->next)
+		if (d->id == id) return d;
+	return NULL;
+}
+/* engine thread: the frontend's answer */
+static void dl_accept(unsigned id, const char *path)
+{
+	struct gui_download_window *d = dl_find(id);
+	if (!d || d->accepted) return;
+	d->accepted = 1;
+	d->path = path ? strdup(path) : NULL;
+	if (!d->failed) {
+		d->fh = d->path ? fopen(d->path, "wb") : NULL;
+		if (!d->fh || (d->elen && fwrite(d->early, 1, d->elen, d->fh) != d->elen)) {
+			trace("ns: download cannot write", path);
+			d->failed = -1;
+		}
+	}
+	free(d->early); d->early = NULL; d->elen = d->ecap = 0;
+	if (d->failed && !d->finished) {          /* stop the transfer here: no callback follows an abort */
+		download_context_abort(d->ctx);
+		d->finished = 1;
+	}
+	dl_finish(d);
+}
+static void dl_cancel(unsigned id)
+{
+	struct gui_download_window *d = dl_find(id);
+	if (!d) return;
+	if (!d->finished) download_context_abort(d->ctx);
+	if (d->fh) { fclose(d->fh); d->fh = NULL; }
+	if (d->path) remove(d->path);
+	post_id(d->view, PHE_EV_DOWNLOAD_DONE, -3 /* KErrCancel */, 0, d->id);
+	dl_free(d);
+}
+
 static struct gui_window_table window_table = {
 	.create = gw_create, .destroy = gw_destroy, .invalidate = gw_invalidate, .get_scroll = gw_get_scroll,
 	.set_scroll = gw_set_scroll, .get_dimensions = gw_get_dimensions, .event = gw_event, .set_title = gw_set_title,
@@ -432,7 +603,7 @@ static int ns_start(void)
 	memset(&tbl, 0, sizeof tbl);
 	tbl.misc = &misc_table; tbl.window = &window_table; tbl.clipboard = framebuffer_clipboard_table;
 	tbl.fetch = framebuffer_fetch_table; tbl.utf8 = framebuffer_utf8_table; tbl.bitmap = framebuffer_bitmap_table;
-	tbl.layout = framebuffer_layout_table;
+	tbl.layout = framebuffer_layout_table; tbl.download = &download_table;
 	if (nsfb_type_from_name("ram") == NSFB_SURFACE_NONE) { trace("ns: ram surface not registered by a constructor: registering", NULL); ram_register_surface(); }
 	if (find_resources() != 0) { trace("ns: no resources", NULL); return -1; }
 	chdir(resroot);
@@ -486,7 +657,10 @@ static void do_load(struct gui_window *g, const char *url)
 
 static void do_cmd(struct cmd *k)
 {
-	struct gui_window *g = find(k->v);
+	struct gui_window *g;
+	if (k->type == C_DL_ACCEPT) { dl_accept((unsigned)k->a, k->s); return; }
+	if (k->type == C_DL_CANCEL) { dl_cancel((unsigned)k->a); return; }
+	g = find(k->v);
 	if (!g) return;
 	switch (k->type) {
 	case C_DESTROY:
@@ -753,7 +927,8 @@ static int e_get_str(PheView v, int which, unsigned short *buf, int cap)
 	g = find(v);
 	if (g) {
 		const char *s = which == PHE_STR_URL ? g->url : which == PHE_STR_TITLE ? g->title : which == PHE_STR_ERROR ? g->err :
-		                which == PHE_STR_FOCUS_VALUE ? g->fval : "";
+		                which == PHE_STR_FOCUS_VALUE ? g->fval : which == PHE_STR_DL_URL ? g->dl_url :
+		                which == PHE_STR_DL_NAME ? g->dl_name : which == PHE_STR_DL_MIME ? g->dl_mime : "";
 		strncpy(tmp, s, sizeof tmp - 1); tmp[sizeof tmp - 1] = 0;
 	}
 	pthread_mutex_unlock(&mu);
@@ -795,15 +970,20 @@ static int e_lock_pixels(PheView v, const unsigned int **px, int *w, int *h, int
 }
 static void e_unlock_pixels(PheView v) { (void)v; pthread_mutex_unlock(&pixmu); }
 static void e_clear_data(int bits) { (void)bits; }
+static void e_download_accept(PheView v, unsigned id, const unsigned short *path, int len)
+{
+	enqueue(C_DL_ACCEPT, v, (int)id, 0, 0, u16to8(path, len));
+}
+static void e_download_cancel(PheView v, unsigned id) { enqueue(C_DL_CANCEL, v, (int)id, 0, 0, NULL); }
 
 static const PheWebEngineApi api = {
-	sizeof(PheWebEngineApi), PHE_WEBENGINE_VERSION, "NetSurf", "3.11", PHE_CAP_REFLOW | PHE_CAP_ZOOM, MAXV,
+	sizeof(PheWebEngineApi), PHE_WEBENGINE_VERSION, "NetSurf", "3.11", PHE_CAP_SCRIPT | PHE_CAP_TLS13 | PHE_CAP_ZOOM | PHE_CAP_DOWNLOAD | PHE_CAP_REFLOW, MAXV,
 	e_init, e_shutdown, e_set_ua, e_set_iap, e_memory_pressure,
 	e_new_view_id, e_view_create, e_view_destroy, e_view_resize, e_view_visible, e_view_suspend, e_view_save_state,
 	e_load, e_cmd, e_get_state, e_get_str, e_poll, e_dialog_reply,
 	e_scroll, e_zoom, e_pointer, e_key, e_text, e_setting,
 	e_lock_pixels, e_unlock_pixels, NULL,
-	NULL, NULL, NULL, NULL, NULL, e_clear_data,
+	NULL, NULL, NULL, e_download_accept, e_download_cancel, e_clear_data,
 	e_set_field
 };
 

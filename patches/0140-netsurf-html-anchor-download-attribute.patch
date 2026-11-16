@@ -1,0 +1,74 @@
+diff -ru a/netsurf/content/handlers/html/interaction.c b/netsurf/content/handlers/html/interaction.c
+--- a/netsurf/content/handlers/html/interaction.c	2026-11-16 08:10:35.112969000 +0000
++++ b/netsurf/content/handlers/html/interaction.c	2026-11-16 09:26:04.617522700 +0000
+@@ -63,6 +63,51 @@
+ #include "html/imagemap.h"
+ #include "html/interaction.h"
+ 
++/* <a download[="name"]>: the link is saved, not shown. The front end reads the suggested name when the download for that URL
++ * starts (phns_dl_hint_url / phns_dl_hint_name, the engine thread only). */
++char phns_dl_hint_url[1024];
++char phns_dl_hint_name[256];
++
++/* the download attribute of the link's anchor (the box's node or an ancestor), false when it has none; name = its value */
++static bool link_download_attr(struct box *box, char *name, size_t len)
++{
++	dom_node *n;
++	while (box != NULL && box->node == NULL)   /* a text box: its node is on the inline box of the element */
++		box = box->parent;
++	n = box != NULL ? box->node : NULL;
++	dom_string *attr, *v = NULL;
++	bool has = false;
++	name[0] = 0;
++	if (n == NULL || dom_string_create((const uint8_t *)"download", 8, &attr) != DOM_NO_ERR)
++		return false;
++	dom_node_ref(n);
++	while (n != NULL) {
++		dom_node_type t;
++		dom_node *p = NULL;
++		if (dom_node_get_node_type(n, &t) == DOM_NO_ERR && t == DOM_ELEMENT_NODE) {
++			dom_string *tag = NULL;
++			if (dom_node_get_node_name(n, &tag) == DOM_NO_ERR && tag != NULL) {
++				bool a = dom_string_caseless_lwc_isequal(tag, corestring_lwc_a);
++				dom_string_unref(tag);
++				if (a) {
++					if (dom_element_has_attribute(n, attr, &has) == DOM_NO_ERR && has &&
++					    dom_element_get_attribute(n, attr, &v) == DOM_NO_ERR && v != NULL) {
++						snprintf(name, len, "%.*s", (int)dom_string_byte_length(v), dom_string_data(v));
++						dom_string_unref(v);
++					}
++					dom_node_unref(n);
++					break;
++				}
++			}
++		}
++		dom_node_get_parent_node(n, &p);
++		dom_node_unref(n);
++		n = p;
++	}
++	dom_string_unref(attr);
++	return has;
++}
++
+ /**
+  * Get pointer shape for given box
+  *
+@@ -1170,6 +1215,18 @@
+ 				  CONTENT_MSG_SAVELINK,
+ 				  &msg_data);
+ 
++	} else if (mouse & BROWSER_MOUSE_CLICK_1 && !is_javascript_navigate_url(mas->link.url) &&
++		   link_download_attr(mas->link.box, phns_dl_hint_name, sizeof phns_dl_hint_name)) {
++		/* <a download>: save it (the page stays) */
++		snprintf(phns_dl_hint_url, sizeof phns_dl_hint_url, "%s", nsurl_access(mas->link.url));
++		browser_window_navigate(bw,
++					mas->link.url,
++					content_get_url((struct content *)html),
++					BW_NAVIGATE_DOWNLOAD,
++					NULL,
++					NULL,
++					NULL);
++
+ 	} else if (mouse & (BROWSER_MOUSE_CLICK_1 | BROWSER_MOUSE_CLICK_2)) {
+ 		if (is_javascript_navigate_url(mas->link.url)) {
+ 			mas->result.action = ACTION_JS;
